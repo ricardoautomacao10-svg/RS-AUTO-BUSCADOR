@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>News Automation — Painel</title>
+  <style>
+    :root{
+      --bg:#0b0d10; --card:#12151a; --muted:#9aa4b2; --text:#e6ebf2; --acc:#4da3ff; --acc2:#22c55e;
+      --danger:#ef4444; --border:#1f2630;
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;
+      background:linear-gradient(180deg,#0b0d10,#0d1117 60%,#0b0d10);
+      color:var(--text);
+    }
+    .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
+    header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
+    .brand{font-weight:700;letter-spacing:.3px}
+    .muted{color:var(--muted)}
+    .grid{display:grid;grid-template-columns:1fr;gap:16px}
+    @media (min-width:880px){.grid{grid-template-columns: 1.2fr .8fr}}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 16px 14px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+    .card h3{margin:6px 0 12px}
+    .row{display:flex;gap:10px;flex-wrap:wrap}
+    input,button,select{
+      border:1px solid var(--border); background:#0f1318; color:var(--text);
+      border-radius:10px; padding:10px 12px; font-size:15px; outline:none;
+    }
+    input:focus,select:focus{border-color:#2a3748; box-shadow:0 0 0 3px rgba(77,163,255,.12)}
+    button{cursor:pointer; border:0; background:var(--acc); color:#07131f; font-weight:700}
+    button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
+    button.success{background:var(--acc2);color:#062012}
+    button.warn{background:var(--danger); color:white}
+    .hint{font-size:13px;color:var(--muted)}
+    .results{margin-top:10px; display:grid; grid-template-columns:1fr; gap:14px}
+    @media (min-width:720px){.results{grid-template-columns:1fr 1fr}}
+    .news{background:#0f1318;border:1px solid var(--border); border-radius:12px; overflow:hidden}
+    .news .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
+    .news img{width:100%; height:100%; object-fit:cover}
+    .news .cnt{padding:12px 12px 14px}
+    .news .title{font-weight:700;line-height:1.2;margin:0 0 8px}
+    .badge{display:inline-block; font-size:12px; color:#c8d3e1; background:#122233; border:1px solid #1b3049; padding:2px 8px; border-radius:999px}
+    .actions{display:flex; gap:8px; margin-top:10px; flex-wrap:wrap}
+    .sep{height:1px;background:#111821;border-top:1px solid #0e1520;margin:12px 0}
+    .status{font-size:14px}
+    .spinner{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:blur(2px);z-index:999;align-items:center;justify-content:center}
+    .spinner .dot{width:12px;height:12px;border-radius:50%;background:var(--acc);box-shadow:20px 0 0 var(--acc),-20px 0 0 var(--acc);animation:b 1s infinite ease-in-out}
+    @keyframes b{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
+    .toast{position:fixed;right:16px;bottom:16px;background:#0f1318;border:1px solid var(--border);padding:10px 14px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);display:none}
+  </style>
+</head>
+<body>
+  <div class="spinner" id="spinner"><div class="dot"></div></div>
+  <div class="toast" id="toast"></div>
+
+  <div class="wrap">
+    <header>
+      <div>
+        <div class="brand">🗞️ News Automation</div>
+        <div class="muted">Coletor leve com painel — digite a pauta e veja os cards.</div>
+      </div>
+      <a class="badge" href="/healthz" target="_blank">/healthz</a>
+    </header>
+
+    <div class="grid">
+      <div class="card">
+        <h3>Buscar por palavras-chave</h3>
+        <div class="row">
+          <input id="kw" placeholder="Ex.: prefeitura, economia, segurança pública" style="flex:1" />
+          <select id="hours">
+            <option value="12">Últimas 12h</option>
+            <option value="8">Últimas 8h</option>
+            <option value="6">Últimas 6h</option>
+            <option value="5">Últimas 5h</option>
+            <option value="24">Últimas 24h</option>
+          </select>
+          <button id="btnCrawl">Coletar agora</button>
+        </div>
+        <div class="hint">Dica: se você usa a janela “5–12h”, rode a coleta a cada 5–6h.</div>
+        <div class="sep"></div>
+        <div class="row">
+          <input id="kwLive" placeholder="Ver resultados por palavra-chave (slug ou normal)" style="flex:1" />
+          <button class="secondary" id="btnList">Listar</button>
+          <button class="secondary" id="btnListAll">Listar 3 últimas palavras (atalho)</button>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+
+      <div class="card">
+        <h3>Adicionar link específico</h3>
+        <div class="row">
+          <input id="linkUrl" placeholder="https://site.com/sua-noticia" style="flex:1" />
+        </div>
+        <div class="row" style="margin-top:8px">
+          <input id="linkKw" placeholder="Palavra-chave (ex.: meu-topico)" />
+          <button class="success" id="btnAdd">Adicionar</button>
+        </div>
+        <div class="hint">O item só entra se tiver <b>H1</b>, <b>imagem</b> e <b>parágrafos</b> válidos.</div>
+      </div>
+    </div>
+
+    <div style="margin:18px 0 8px" class="muted">Resultados</div>
+    <div class="results" id="results"></div>
+  </div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const spinner = $("#spinner");
+    const toast = $("#toast");
+    let lastKeywords = [];
+
+    function showSpinner(v){ spinner.style.display = v ? "flex" : "none"; }
+    function showToast(msg){ toast.textContent = msg; toast.style.display = "block"; setTimeout(()=>toast.style.display="none", 2600); }
+    function setStatus(html){ $("#status").innerHTML = html; }
+
+    function fmtDate(iso){
+      if(!iso) return "";
+      const d = new Date(iso);
+      return d.toLocaleString("pt-BR",{dateStyle:"short", timeStyle:"short"});
+    }
+
+    function card(item){
+      const hrefItem = `/item/${item.id}`;
+      const src = item.image || "";
+      const srcName = item.source_name || "";
+      const orig = item.url || "#";
+      const title = item.title || "(sem título)";
+      const pub = fmtDate(item.published_at);
+      const created = fmtDate(item.created_at);
+
+      return `
+        <div class="news">
+          <div class="img-wrap">${src ? `<img src="${src}" alt="">` : `<div class="muted">sem imagem</div>`}</div>
+          <div class="cnt">
+            <div class="title"><a href="${hrefItem}" target="_blank" rel="noopener">${title}</a></div>
+            <div class="muted" style="font-size:13px">${srcName}${pub ? " • " + pub : ""}</div>
+            <div class="actions">
+              <a class="badge" href="${hrefItem}" target="_blank" rel="noopener">Ver Limpinho</a>
+              ${orig ? `<a class="badge" href="${orig}" target="_blank" rel="noopener">Matéria Original</a>` : ""}
+              <button class="secondary" onclick="copyLink('${location.origin}${hrefItem}')">Copiar permalink</button>
+            </div>
+            <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created || "-"}</div>
+          </div>
+        </div>
+      `;
+    }
+
+    function render(items){
+      const box = $("#results");
+      if(!items || !items.length){
+        box.innerHTML = `<div class="muted">Sem resultados para exibir.</div>`;
+        return;
+      }
+      box.innerHTML = items.map(card).join("");
+    }
+
+    async function apiList(keyword, hours){
+      const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${encodeURIComponent(hours)}`);
+      if(!r.ok) throw new Error("Erro ao listar");
+      const data = await r.json();
+      return data.items || [];
+    }
+
+    async function crawl(keywords, hours){
+      const r = await fetch("/crawl", {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ keywords, hours_max: hours })
+      });
+      if(!r.ok) throw new Error("Erro ao coletar");
+      return r.json();
+    }
+
+    async function addLink(url, keyword){
+      const r = await fetch("/add", {
+        method: "POST",
+        headers: { "Content-Type":"application/json" },
+        body: JSON.stringify({ url, keyword })
+      });
+      if(!r.ok){
+        const t = await r.text();
+        throw new Error(t || "Erro ao adicionar link");
+      }
+      return r.json();
+    }
+
+    async function onCrawl(){
+      const raw = $("#kw").value.trim();
+      if(!raw){ showToast("Digite ao menos 1 palavra-chave"); return; }
+      const hours = Number($("#hours").value || 12);
+      const kws = raw.split(",").map(s=>s.trim()).filter(Boolean);
+      lastKeywords = kws.slice(0,3);
+
+      showSpinner(true); setStatus("Coletando…");
+      try{
+        const data = await crawl(kws, hours);
+        const first = kws[0];
+        const items = await apiList(first, hours);
+        render(items);
+        setStatus(`Coletado. Palavras: <b>${kws.join(", ")}</b>. Mostrando: <b>${first}</b> (últimas ${hours}h).`);
+        showToast("Coleta concluída");
+      }catch(e){
+        console.error(e); showToast("Falha na coleta");
+        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
+      }finally{ showSpinner(false); }
+    }
+
+    async function onList(){
+      const kw = $("#kwLive").value.trim();
+      const hours = Number($("#hours").value || 12);
+      if(!kw){ showToast("Informe a palavra-chave para listar"); return; }
+      showSpinner(true); setStatus("Listando…");
+      try{
+        const items = await apiList(kw, hours);
+        render(items);
+        setStatus(`Listando: <b>${kw}</b> (últimas ${hours}h)`);
+      }catch(e){
+        console.error(e); showToast("Falha ao listar");
+        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
+      }finally{ showSpinner(false); }
+    }
+
+    async function onListAll(){
+      if(!lastKeywords.length){ showToast("Faça uma coleta primeiro"); return; }
+      const hours = Number($("#hours").value || 12);
+      showSpinner(true); setStatus("Listando últimas palavras…");
+      try{
+        let all = [];
+        for(const kw of lastKeywords){
+          const items = await apiList(kw, hours);
+          all = all.concat(items.slice(0,6));
+        }
+        // ordena por created_at desc
+        all.sort((a,b)=> (b.created_at||"").localeCompare(a.created_at||""));
+        render(all.slice(0,12));
+        setStatus(`Últimas de: <b>${lastKeywords.join(", ")}</b> (janela ${hours}h)`);
+      }catch(e){
+        console.error(e); showToast("Falha ao listar");
+        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
+      }finally{ showSpinner(false); }
+    }
+
+    async function onAdd(){
+      const url = $("#linkUrl").value.trim();
+      const kw = ($("#linkKw").value.trim()) || "geral";
+      if(!url){ showToast("Cole o link da matéria"); return; }
+      showSpinner(true); setStatus("Adicionando link…");
+      try{
+        const res = await addLink(url, kw);
+        const hours = Number($("#hours").value || 12);
+        const items = await apiList(kw, hours);
+        render(items);
+        setStatus(`Adicionado com sucesso. Mostrando: <b>${kw}</b>.`);
+        showToast("Link adicionado!");
+        $("#kwLive").value = kw;
+      }catch(e){
+        console.error(e); showToast("Falha ao adicionar");
+        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
+      }finally{ showSpinner(false); }
+    }
+
+    function copyLink(link){
+      navigator.clipboard.writeText(link).then(()=> showToast("Permalink copiado"));
+    }
+
+    // binds
+    $("#btnCrawl").addEventListener("click", onCrawl);
+    $("#btnList").addEventListener("click", onList);
+    $("#btnListAll").addEventListener("click", onListAll);
+    $("#btnAdd").addEventListener("click", onAdd);
+
+    // UX: Enter na caixa de palavra-chave lista
+    $("#kwLive").addEventListener("keydown", e=>{ if(e.key==="Enter") onList(); });
+    $("#kw").addEventListener("keydown", e=>{ if(e.key==="Enter") onCrawl(); });
+    $("#linkUrl").addEventListener("keydown", e=>{ if(e.key==="Enter") onAdd(); });
+
+    // Estado inicial
+    setStatus('Pronto. Use "Coletar agora" ou "Adicionar link".');
+  </script>
+</body>
+</html>
