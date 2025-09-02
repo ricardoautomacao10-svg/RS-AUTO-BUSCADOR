@@ -1,20 +1,12 @@
 # news_automation.py
-# Automação leve de notícias + UI:
-# - Busca por palavras-chave (Google News RSS) nas últimas X horas
-# - Extrai H1, imagem principal e parágrafos "inteiros" (limpos)
-# - Remove "leia mais/também", publicidade e CTAs
-# - Gera permalink fixo /item/{id} e lista por /q/{slug}
-# - Endpoint /add para ingerir 1 link específico
-# - Painel web simples em / (HTML em /static/index.html)
+# Automação de notícias + UI + RSS/JSON:
+# - Busca por palavras-chave (Google News RSS) nas últimas X horas (/crawl)
+# - Ingestão de link direto (/add)
+# - Limpeza (H1, IMG, <p>), com modo estrito opcional
+# - Saídas: /api/list (JSON), /api/json/{slug} (JSON), /rss/{slug} (RSS 2.0)
+# - Painel web em / (static/index.html)
 #
-# Requisitos (requirements.txt):
-# fastapi
-# uvicorn[standard]
-# httpx
-# feedparser
-# beautifulsoup4
-# trafilatura
-# python-slugify
+# Requisitos (requirements.txt no fim)
 
 import os
 import re
@@ -25,27 +17,26 @@ import sqlite3
 import asyncio
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote
 from pathlib import Path
+from html import escape
 
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Body, HTTPException, Query
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi import FastAPI, Body, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# ===== Caminho do banco (com fallback automático) =====
-# - Se definir DB_PATH=/data/news.db e tiver Disk montado, usa /data/news.db (persistente)
-# - Se não tiver permissão, cai para ./data/news.db e, se ainda falhar, ./news.db
+# ===== Caminho do banco (fallback automático) =====
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 
-# ===== Regras duras (dropa itens incompletos) =====
-REQUIRE_H1 = True     # exige H1/título; se faltar, descarta o link
-REQUIRE_IMAGE = True  # exige imagem principal; se faltar, descarta o link
+# ===== Regras padrão (podem ser flexibilizadas por requisição) =====
+REQUIRE_H1_DEFAULT = True
+REQUIRE_IMAGE_DEFAULT = True
 
-# slugify opcional; se não houver, fallback simples
+# slugify opcional; fallback simples se lib não estiver instalada
 try:
     from slugify import slugify
 except Exception:  # pragma: no cover
@@ -55,7 +46,7 @@ except Exception:  # pragma: no cover
         s = re.sub(r"[^a-z0-9\-]+", "", s)
         return s
 
-# trafilatura é opcional (melhora extração quando HTML é ruim)
+# trafilatura opcional (melhora extração quando HTML é ruim)
 try:
     import trafilatura  # type: ignore
 except Exception:  # pragma: no cover
@@ -80,7 +71,6 @@ def from_pubdate_struct(tm: Any) -> Optional[datetime]:
         return None
 
 def stable_id(url: str) -> str:
-    """ID curto, estável, baseado no URL (bom para permalink)."""
     h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
     return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
 
@@ -110,21 +100,15 @@ def clean_paragraph(p: str) -> Optional[str]:
     txt = re.sub(r"\s+", " ", p or "").strip()
     if not txt:
         return None
-
     low = txt.lower()
-
-    # corta padrões comuns de lixo
     if any(b in low for b in BAD_SNIPPETS):
         return None
-
-    # corta parágrafos curtíssimos, urls “soltas” e chamadas soltas
     if len(txt) < 25:
         return None
     if re.search(r"https?://\S+", txt):
         return None
     if re.match(r"^(?:leia|veja|saiba|assine|clique)\b", low):
         return None
-
     return txt
 
 def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
@@ -134,7 +118,6 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
     m = soup.find("meta", attrs={"name": "twitter:image"})
     if m and m.get("content"):
         return m["content"].strip()
-    # fallback: primeira imagem plausível
     for img in soup.find_all("img")[:10]:
         src = (img.get("src") or "").strip()
         if not src:
@@ -148,16 +131,14 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
 async def fetch_html(client: httpx.AsyncClient, url: str) -> Optional[str]:
     try:
         r = await client.get(
-            url,
-            timeout=15.0,
+            url, timeout=20.0, follow_redirects=True,
             headers={
                 "User-Agent": "Mozilla/5.0 (compatible; NewsAutomation/1.0)",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
             },
-            follow_redirects=True,
         )
         ctype = r.headers.get("Content-Type", "")
-        if 200 <= r.status_code < 300 and "text/html" in ctype:
+        if 200 <= r.status_code < 300 and ("text/html" in ctype or "application/xhtml" in ctype):
             return r.text
     except Exception:
         return None
@@ -175,27 +156,19 @@ def title_from_html(html: str) -> Optional[str]:
 
 def paragraphs_from_html(html: str) -> List[str]:
     soup = BeautifulSoup(html, "html.parser")
-    # Foco em <article>; se não existir, cair para o <body>
     root = soup.find("article") or soup.body or soup
     ps: List[str] = []
     for p in root.find_all("p"):
-        # ignora p dentro de scripts/nav/aside/footer/header/figcaption
         if p.find_parent(["script", "nav", "aside", "footer", "header", "noscript", "figure"]):
             continue
-        txt = p.get_text(" ", strip=True)
-        c = clean_paragraph(txt)
+        c = clean_paragraph(p.get_text(" ", strip=True))
         if c:
             ps.append(c)
-
-    # fallback: trafilatura, quando não achou nada com <p>
     if not ps and trafilatura:
         try:
             extracted = trafilatura.extract(
-                html,
-                include_comments=False,
-                include_tables=False,
-                include_images=False,
-                favor_recall=True,
+                html, include_comments=False, include_tables=False,
+                include_images=False, favor_recall=True
             )
             if extracted:
                 parts = [clean_paragraph(t) for t in re.split(r"\n{2,}", extracted)]
@@ -205,29 +178,50 @@ def paragraphs_from_html(html: str) -> List[str]:
     return ps
 
 def first_image_from_html(html: str) -> Optional[str]:
-    soup = BeautifulSoup(html, "html.parser")
-    return extract_og_image(soup)
+    return extract_og_image(BeautifulSoup(html, "html.parser"))
 
+# ===== Expansão de links "wrapper" (Facebook / t.co) =====
+def unwrap_special_links(url: str) -> str:
+    """Retorna URL de destino quando o link é um wrapper (l.facebook.com, t.co).
+       OBS: páginas comuns de Facebook/Instagram/X que exigem login não são suportadas."""
+    try:
+        u = urlparse(url)
+        host = u.netloc.lower()
+        # Facebook redirecionador: https://l.facebook.com/l.php?u=<url-escapada>&h=...
+        if "l.facebook.com" in host and u.path.startswith("/l.php"):
+            qs = parse_qs(u.query)
+            target = qs.get("u", [None])[0]
+            if target:
+                return unquote(target)
+        # Alguns links no facebook usam "facebook.com/plugins/post.php?href=<url>"
+        if "facebook.com" in host and ("href=" in u.query):
+            qs = parse_qs(u.query)
+            target = qs.get("href", [None])[0]
+            if target:
+                return unquote(target)
+        # t.co
+        if host == "t.co":
+            # não dá pra expandir sem requisição; deixamos httpx seguir redirects (já está ligado)
+            return url
+    except Exception:
+        pass
+    return url
 
 # ========================== Banco de Dados ==========================
 
 def db_init() -> None:
-    """Garante que DB_PATH seja gravável, com fallback automático."""
     global DB_PATH
-    # Tenta criar diretório de DB_PATH (ex.: /data ou ./data)
     dirpath = os.path.dirname(DB_PATH)
     try:
         if dirpath:
             os.makedirs(dirpath, exist_ok=True)
     except PermissionError:
-        # Sem permissão para /data -> cai para ./data/news.db
         DB_PATH = "./data/news.db"
         dirpath = os.path.dirname(DB_PATH)
         try:
             if dirpath:
                 os.makedirs(dirpath, exist_ok=True)
         except Exception:
-            # Se ainda assim falhar, usa ./news.db
             DB_PATH = "./news.db"
 
     con = sqlite3.connect(DB_PATH)
@@ -237,9 +231,9 @@ def db_init() -> None:
             url TEXT UNIQUE,
             title TEXT,
             image TEXT,
-            paragraphs TEXT,   -- JSON array
+            paragraphs TEXT,
             source_name TEXT,
-            published_at TEXT, -- ISO
+            published_at TEXT,
             keyword TEXT,
             created_at TEXT
         )
@@ -261,69 +255,37 @@ def db_upsert(item: Dict[str, Any]) -> None:
             published_at=excluded.published_at,
             keyword=excluded.keyword
     """, (
-        item["id"],
-        item["url"],
-        item.get("title"),
-        item.get("image"),
+        item["id"], item["url"], item.get("title"), item.get("image"),
         json.dumps(item.get("paragraphs", []), ensure_ascii=False),
-        item.get("source_name"),
-        item.get("published_at"),
-        item.get("keyword"),
-        iso(now_utc()),
+        item.get("source_name"), item.get("published_at"),
+        item.get("keyword"), iso(now_utc())
     ))
-    con.commit()
-    con.close()
+    con.commit(); con.close()
 
 def db_get(id_: str) -> Optional[Dict[str, Any]]:
     con = sqlite3.connect(DB_PATH)
-    cur = con.execute("""
-        SELECT id,url,title,image,paragraphs,source_name,published_at,keyword,created_at
-        FROM items WHERE id=?
-    """, (id_,))
-    row = cur.fetchone()
-    con.close()
-    if not row:
-        return None
-    return {
-        "id": row[0],
-        "url": row[1],
-        "title": row[2],
-        "image": row[3],
-        "paragraphs": json.loads(row[4] or "[]"),
-        "source_name": row[5],
-        "published_at": row[6],
-        "keyword": row[7],
-        "created_at": row[8],
-    }
+    cur = con.execute("""SELECT id,url,title,image,paragraphs,source_name,published_at,keyword,created_at
+                         FROM items WHERE id=?""", (id_,))
+    r = cur.fetchone(); con.close()
+    if not r: return None
+    return {"id":r[0],"url":r[1],"title":r[2],"image":r[3],
+            "paragraphs":json.loads(r[4] or "[]"),"source_name":r[5],
+            "published_at":r[6],"keyword":r[7],"created_at":r[8]}
 
-def db_list_by_keyword(slug: str, since_hours: int = 12) -> List[Dict[str, Any]]:
-    cutoff = now_utc() - timedelta(hours=since_hours)
+def db_list_by_keyword(slug: str, since_hours: int=12) -> List[Dict[str, Any]]:
+    cutoff = iso(now_utc() - timedelta(hours=since_hours))
     con = sqlite3.connect(DB_PATH)
     cur = con.execute("""
-        SELECT id,url,title,image,source_name,published_at,created_at
-        FROM items
-        WHERE keyword = ? AND created_at >= ?
-        ORDER BY created_at DESC
-    """, (slug, iso(cutoff)))
-    out: List[Dict[str, Any]] = []
-    for r in cur.fetchall():
-        out.append({
-            "id": r[0],
-            "url": r[1],
-            "title": r[2],
-            "image": r[3],
-            "source_name": r[4],
-            "published_at": r[5],
-            "created_at": r[6],
-        })
-    con.close()
-    return out
-
+      SELECT id,url,title,image,source_name,published_at,created_at
+      FROM items WHERE keyword=? AND created_at>=? ORDER BY created_at DESC
+    """, (slug, cutoff))
+    out = [{"id":r[0],"url":r[1],"title":r[2],"image":r[3],"source_name":r[4],
+            "published_at":r[5],"created_at":r[6]} for r in cur.fetchall()]
+    con.close(); return out
 
 # ========================== Coleta (RSS + extração) ==========================
 
-def google_news_rss(keyword: str, lang: str = "pt-BR", region: str = "BR") -> str:
-    # "when:12h" ajuda a focar período; ainda filtramos por data.
+def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
     q = quote_plus(f'{keyword} when:12h')
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={region}&ceid=BR:pt-419"
 
@@ -334,90 +296,69 @@ async def process_article(
     pub_dt: datetime,
     feed_title: Optional[str],
     feed_source_name: Optional[str],
+    strict_h1: bool,
+    strict_img: bool,
 ) -> Dict[str, Any]:
+    # expande wrappers de Facebook/t.co quando possível
+    url = unwrap_special_links(url)
+
     html = await fetch_html(client, url)
     if not html:
         return {}
 
-    # extrai
     title = title_from_html(html) or (feed_title or "")
     image = first_image_from_html(html)
     paragraphs = paragraphs_from_html(html)
 
-    # regras duras
-    if REQUIRE_H1 and (not title or not title.strip()):
+    if strict_h1 and (not title or not title.strip()):
         return {}
-    if REQUIRE_IMAGE and (not image or not str(image).strip()):
+    if strict_img and (not image or not str(image).strip()):
         return {}
     if not paragraphs:
         return {}
 
     source_name = feed_source_name or hostname_from_url(url)
     return {
-        "id": stable_id(url),
-        "url": url,
-        "title": title[:220] if title else "",
-        "image": image,
-        "paragraphs": paragraphs,
-        "source_name": source_name,
-        "published_at": iso(pub_dt),
-        "keyword": slugify(keyword),
+        "id": stable_id(url), "url": url, "title": title[:220] if title else "",
+        "image": image, "paragraphs": paragraphs, "source_name": source_name,
+        "published_at": iso(pub_dt), "keyword": slugify(keyword)
     }
 
-async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int = 12) -> List[Dict[str, Any]]:
-    rss_url = google_news_rss(keyword)
+async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
+                        strict_h1: bool, strict_img: bool) -> List[Dict[str, Any]]:
     try:
-        r = await client.get(rss_url, timeout=15.0, headers={"User-Agent": "NewsAutomation/1.0"})
-        if r.status_code != 200:
-            return []
-        feed_text = r.text
+        r = await client.get(google_news_rss(keyword), timeout=20.0,
+                             headers={"User-Agent":"NewsAutomation/1.0"})
+        if r.status_code != 200: return []
+        feed = feedparser.parse(r.text)
     except Exception:
         return []
-
-    feed = feedparser.parse(feed_text)
-    now = now_utc()
-    cutoff = now - timedelta(hours=hours_max)
-    limit = 20  # manter leve
-
-    tasks: List[asyncio.Task] = []
-    for entry in feed.entries[:limit]:
-        link = entry.get("link")
-        if not link:
-            continue
+    now = now_utc(); cutoff = now - timedelta(hours=hours_max)
+    tasks = []
+    for entry in feed.entries[:30]:
+        link = entry.get("link"); if not link: continue
         pub = from_pubdate_struct(entry.get("published_parsed")) or now
-        if pub < cutoff:
-            continue
-        entry_source = None
-        try:
-            src_obj = entry.get("source", {})
-            entry_source = getattr(src_obj, "title", None) or src_obj.get("title")
-        except Exception:
-            entry_source = None
-        tasks.append(asyncio.create_task(
-            process_article(client, link, keyword, pub, entry.get("title"), entry_source)
-        ))
-
-    out: List[Dict[str, Any]] = []
+        if pub < cutoff: continue
+        src = None
+        try: src = entry.get("source", {}).get("title")
+        except Exception: pass
+        tasks.append(process_article(client, link, keyword, pub, entry.get("title"), src,
+                                     strict_h1, strict_img))
     results = await asyncio.gather(*tasks, return_exceptions=True)
+    out: List[Dict[str, Any]] = []
     for it in results:
         if isinstance(it, dict) and it.get("paragraphs"):
-            out.append(it)
-            db_upsert(it)
+            out.append(it); db_upsert(it)
     return out
-
 
 # ========================== App Factory + Rotas ==========================
 
 def create_app() -> FastAPI:
     db_init()
     app = FastAPI(title=APP_TITLE)
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"], allow_credentials=True,
-        allow_methods=["*"], allow_headers=["*"],
-    )
+    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
+                       allow_methods=["*"], allow_headers=["*"])
 
-    # servir /static (CSS/JS/HTML). check_dir=False evita erro se a pasta não existir.
     app.mount("/static", StaticFiles(directory="static", html=True, check_dir=False), name="static")
 
     @app.get("/healthz")
@@ -428,60 +369,75 @@ def create_app() -> FastAPI:
     async def crawl(
         keywords: List[str] = Body(default=["política", "economia"]),
         hours_max: int = Body(default=12),
+        strict: bool = Body(default=True),
+        require_image: bool = Body(default=True),
     ):
-        """
-        Coleta notícias por palavras-chave, filtra por últimas 'hours_max' horas,
-        salva no DB e retorna IDs/títulos coletados.
-        """
+        """Coleta por palavras-chave. 'strict' exige H1; 'require_image' exige IMG."""
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            results: Dict[str, Any] = {}
+            res: Dict[str, Any] = {}
             for kw in keywords:
-                items = await crawl_keyword(client, kw, hours_max=hours_max)
-                results[slugify(kw)] = [
-                    {"id": it["id"], "title": it["title"], "source": it["source_name"]}
-                    for it in items
-                ]
-            return {"collected": results}
+                items = await crawl_keyword(client, kw, hours_max,
+                                            strict_h1=strict, strict_img=require_image)
+                res[slugify(kw)] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in items]
+            return {"collected": res}
 
     @app.post("/add")
     async def add_link(
         url: str = Body(..., embed=True),
         keyword: str = Body("geral", embed=True),
+        strict: bool = Body(default=True),
+        require_image: bool = Body(default=True),
     ):
-        """
-        Ingestão direta de um link específico (gera permalink fixo).
-        """
+        """Ingestão de um link único (precisa ser página pública)."""
         async with httpx.AsyncClient(follow_redirects=True) as client:
-            pub_dt = now_utc()
-            item = await process_article(client, url, keyword, pub_dt, None, None)
+            item = await process_article(client, url, keyword, now_utc(), None, None,
+                                         strict_h1=strict, strict_img=require_image)
             if not item or not item.get("paragraphs"):
                 raise HTTPException(status_code=400, detail="Não foi possível extrair conteúdo desse link.")
             db_upsert(item)
-            return {
-                "id": item["id"],
-                "title": item["title"],
-                "permalink": f"/item/{item['id']}",
-                "keyword": item["keyword"],
-            }
+            return {"id": item["id"], "title": item["title"], "permalink": f"/item/{item['id']}", "keyword": item["keyword"]}
 
     @app.get("/api/list")
-    def api_list(keyword: str = Query(..., description="Palavra-chave (slug ou normal)"),
-                 hours: int = Query(12, ge=1, le=48)):
-        """
-        Lista em JSON os itens recentes por palavra-chave (para o painel).
-        """
-        rows = db_list_by_keyword(slugify(keyword), since_hours=hours)
-        return {"items": rows}
+    def api_list(keyword: str = Query(...), hours: int = Query(12, ge=1, le=72)):
+        """JSON simples para integração."""
+        return {"items": db_list_by_keyword(slugify(keyword), since_hours=hours)}
+
+    @app.get("/api/json/{keyword_slug}")
+    def api_json(keyword_slug: str, hours: int = Query(12, ge=1, le=72)):
+        """Rota curta para JSON."""
+        return {"items": db_list_by_keyword(keyword_slug, since_hours=hours)}
+
+    @app.get("/rss/{keyword_slug}")
+    def rss_feed(request: Request, keyword_slug: str, hours: int = Query(12, ge=1, le=72)):
+        """RSS 2.0 para cada palavra-chave."""
+        rows = db_list_by_keyword(keyword_slug, since_hours=hours)
+        base = f"{request.url.scheme}://{request.headers.get('host','')}".rstrip("/")
+        chan_title = f"News Automation — {keyword_slug}"
+        chan_link = f"{base}/q/{keyword_slug}"
+        chan_desc = f"Itens recentes para '{keyword_slug}' (últimas {hours}h)."
+        parts = [f'<?xml version="1.0" encoding="UTF-8"?>',
+                 f'<rss version="2.0"><channel>',
+                 f'<title>{escape(chan_title)}</title>',
+                 f'<link>{escape(chan_link)}</link>',
+                 f'<description>{escape(chan_desc)}</description>']
+        for r in rows:
+            link = f"{base}/item/{r['id']}"
+            title = escape(r.get("title") or "(sem título)")
+            guid = r["id"]
+            pub = r.get("published_at") or r.get("created_at") or iso(now_utc())
+            # descrição curta com imagem
+            img = r.get("image") or ""
+            desc_html = f'<![CDATA[{"<img src=\'%s\' /><br/>" % img if img else ""}<a href="{escape(r["url"])}">Matéria Original</a>]]>'
+            parts += [f"<item><title>{title}</title><link>{escape(link)}</link><guid isPermaLink='false'>{guid}</guid><pubDate>{pub}</pubDate><description>{desc_html}</description></item>"]
+        parts.append("</channel></rss>")
+        xml = "\n".join(parts)
+        return Response(content=xml, media_type="application/rss+xml; charset=utf-8")
 
     @app.get("/item/{id}", response_class=HTMLResponse)
     def view_item(id: str):
-        """
-        Renderiza a matéria limpa (H1, imagem, <p>) e encerra com 'Fonte: Matéria Original'.
-        """
         it = db_get(id)
         if not it:
             return HTMLResponse("<h1>Não encontrado</h1>", status_code=404)
-
         parts: List[str] = []
         parts.append(
             "<!doctype html><meta charset='utf-8'>"
@@ -507,15 +463,9 @@ def create_app() -> FastAPI:
 
     @app.get("/q/{keyword_slug}", response_class=HTMLResponse)
     def view_keyword(keyword_slug: str, hours: int = 12):
-        """
-        Lista itens recentes por palavra-chave (slug), com links fixos para /item/{id}.
-        """
         rows = db_list_by_keyword(keyword_slug, since_hours=hours)
         if not rows:
-            return HTMLResponse(
-                "<h1>Nada encontrado</h1><p>Faça POST /crawl ou /add para coletar.</p>",
-                status_code=404,
-            )
+            return HTMLResponse("<h1>Nada encontrado</h1><p>Use POST /crawl ou /add.</p>", status_code=404)
         parts: List[str] = []
         parts.append(
             "<!doctype html><meta charset='utf-8'>"
@@ -523,8 +473,7 @@ def create_app() -> FastAPI:
             "<style>"
             "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
             "max-width:860px;margin:40px auto;padding:0 16px}"
-            "li{margin:10px 0}"
-            "a{text-decoration:none}"
+            "li{margin:10px 0}a{text-decoration:none}"
             "</style>"
         )
         parts.append(f"<h1>Resultados: {keyword_slug}</h1><ul>")
@@ -535,22 +484,19 @@ def create_app() -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def root():
-        # tenta servir o painel; se não existir, mostra instrução
         idx = Path("static/index.html")
         if idx.exists():
             return HTMLResponse(idx.read_text(encoding="utf-8"))
         return HTMLResponse(
             "<p>UI não encontrada. Crie <code>static/index.html</code> no projeto. "
-            "Endpoints: <code>/crawl</code>, <code>/add</code>, <code>/api/list</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
+            "Endpoints: <code>/crawl</code>, <code>/add</code>, <code>/api/list</code>, <code>/api/json/{slug}</code>, "
+            "<code>/rss/{slug}</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
         )
 
     return app
 
-
-# Exporte também um 'app' pronto (para import direto em ASGI)
 app = create_app()
 
-# Execução local (não usado no Render)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
