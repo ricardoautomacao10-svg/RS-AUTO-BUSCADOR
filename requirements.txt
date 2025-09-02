@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+httpx
+feedparser
+beautifulsoup4
+trafilatura
+python-slugify
