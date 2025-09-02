@@ -33,7 +33,9 @@ from fastapi import FastAPI, Body, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-# ===== Config do banco (Render: use Disk montado em /data) =====
+# ===== Caminho do banco (com fallback automático) =====
+# - Se você definir DB_PATH=/data/news.db e tiver Disk montado, usa /data/news.db (persistente)
+# - Se não tiver permissão, cai para ./data/news.db e, se ainda falhar, ./news.db
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 
 # slugify opcional; se não houver, fallback simples
@@ -51,7 +53,6 @@ try:
     import trafilatura  # type: ignore
 except Exception:  # pragma: no cover
     trafilatura = None
-
 
 APP_TITLE = "News Automation"
 
@@ -187,9 +188,24 @@ def first_image_from_html(html: str) -> Optional[str]:
 # ========================== Banco de Dados ==========================
 
 def db_init() -> None:
+    """Garante que DB_PATH seja gravável, com fallback automático."""
+    global DB_PATH
+    # Tenta criar diretório de DB_PATH (ex.: /data ou ./data)
     dirpath = os.path.dirname(DB_PATH)
-    if dirpath:
-        os.makedirs(dirpath, exist_ok=True)
+    try:
+        if dirpath:
+            os.makedirs(dirpath, exist_ok=True)
+    except PermissionError:
+        # Sem permissão para /data -> cai para ./data/news.db
+        DB_PATH = "./data/news.db"
+        dirpath = os.path.dirname(DB_PATH)
+        try:
+            if dirpath:
+                os.makedirs(dirpath, exist_ok=True)
+        except Exception:
+            # Se ainda assim falhar, usa ./news.db
+            DB_PATH = "./news.db"
+
     con = sqlite3.connect(DB_PATH)
     con.execute("""
         CREATE TABLE IF NOT EXISTS items (
