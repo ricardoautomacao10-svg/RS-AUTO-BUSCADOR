@@ -32,7 +32,9 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, Body, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
-
+# Regras duras (dropa itens incompletos)
+REQUIRE_H1 = True     # exige H1/título; se faltar, descarta o link
+REQUIRE_IMAGE = True  # exige imagem principal; se faltar, descarta o link
 # ===== Caminho do banco (com fallback automático) =====
 # - Se você definir DB_PATH=/data/news.db e tiver Disk montado, usa /data/news.db (persistente)
 # - Se não tiver permissão, cai para ./data/news.db e, se ainda falhar, ./news.db
@@ -509,3 +511,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
+
