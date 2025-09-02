@@ -1,0 +1,15 @@
+name: Crawl News
+on:
+  schedule: [{ cron: "0 */6 * * *" }]  # a cada 6h
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call crawler
+        run: |
+          curl -X POST "$APP_URL/crawl" \
+            -H "Content-Type: application/json" \
+            -d '{"keywords":["prefeitura","economia"],"hours_max":12}'
+        env:
+          APP_URL: https://SEU-APP.onrender.com
