@@ -1,10 +1,11 @@
 # news_automation.py
-# Automação leve de notícias:
+# Automação leve de notícias + UI:
 # - Busca por palavras-chave (Google News RSS) nas últimas X horas
 # - Extrai H1, imagem principal e parágrafos "inteiros" (limpos)
 # - Remove "leia mais/também", publicidade e CTAs
 # - Gera permalink fixo /item/{id} e lista por /q/{slug}
 # - Endpoint /add para ingerir 1 link específico
+# - Painel web simples em / (HTML em /static/index.html)
 #
 # Requisitos (requirements.txt):
 # fastapi
@@ -25,20 +26,24 @@ import asyncio
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse
+from pathlib import Path
 
 import feedparser
 import httpx
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Body, HTTPException
+from fastapi import FastAPI, Body, HTTPException, Query
 from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
-# Regras duras (dropa itens incompletos)
-REQUIRE_H1 = True     # exige H1/título; se faltar, descarta o link
-REQUIRE_IMAGE = True  # exige imagem principal; se faltar, descarta o link
+from fastapi.staticfiles import StaticFiles
+
 # ===== Caminho do banco (com fallback automático) =====
-# - Se você definir DB_PATH=/data/news.db e tiver Disk montado, usa /data/news.db (persistente)
+# - Se definir DB_PATH=/data/news.db e tiver Disk montado, usa /data/news.db (persistente)
 # - Se não tiver permissão, cai para ./data/news.db e, se ainda falhar, ./news.db
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
+
+# ===== Regras duras (dropa itens incompletos) =====
+REQUIRE_H1 = True     # exige H1/título; se faltar, descarta o link
+REQUIRE_IMAGE = True  # exige imagem principal; se faltar, descarta o link
 
 # slugify opcional; se não houver, fallback simples
 try:
@@ -86,23 +91,40 @@ def hostname_from_url(url: str) -> str:
     except Exception:
         return "fonte"
 
+# Lista de "lixo" reforçada
 BAD_SNIPPETS = [
-    "leia mais", "leia também", "publicidade", "anúncio",
-    "assine", "assinar", "clique aqui", "veja também",
-    "continue lendo", "continue a ler", "compartilhe",
-    "siga-nos", "newsletter", "inscreva-se", "oferta"
+    # chamadas e CTAs
+    "leia mais", "leia também", "saiba mais", "veja também", "veja mais",
+    "continue lendo", "continue a ler", "clique aqui", "acesse aqui",
+    "inscreva-se", "assine", "assinar", "newsletter",
+    # redes/compartilhamento
+    "compartilhe", "siga-nos", "siga no instagram", "siga no twitter", "siga no x",
+    "siga no facebook", "acompanhe nas redes",
+    # publicidade/comercial
+    "publicidade", "anúncio", "publieditorial", "conteúdo patrocinado", "oferta",
+    # navegação/site
+    "voltar ao topo", "voltar para o início", "cookies", "aceitar cookies"
 ]
 
 def clean_paragraph(p: str) -> Optional[str]:
     txt = re.sub(r"\s+", " ", p or "").strip()
     if not txt:
         return None
+
     low = txt.lower()
+
+    # corta padrões comuns de lixo
     if any(b in low for b in BAD_SNIPPETS):
         return None
-    # descarta muito curtos (breadcrumbs/legendas/CTAs)
+
+    # corta parágrafos curtíssimos, urls “soltas” e chamadas soltas
     if len(txt) < 25:
         return None
+    if re.search(r"https?://\S+", txt):
+        return None
+    if re.match(r"^(?:leia|veja|saiba|assine|clique)\b", low):
+        return None
+
     return txt
 
 def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
@@ -316,12 +338,21 @@ async def process_article(
     html = await fetch_html(client, url)
     if not html:
         return {}
+
+    # extrai
     title = title_from_html(html) or (feed_title or "")
-    paragraphs = paragraphs_from_html(html)
     image = first_image_from_html(html)
-    source_name = feed_source_name or hostname_from_url(url)
+    paragraphs = paragraphs_from_html(html)
+
+    # regras duras
+    if REQUIRE_H1 and (not title or not title.strip()):
+        return {}
+    if REQUIRE_IMAGE and (not image or not str(image).strip()):
+        return {}
     if not paragraphs:
         return {}
+
+    source_name = feed_source_name or hostname_from_url(url)
     return {
         "id": stable_id(url),
         "url": url,
@@ -386,6 +417,9 @@ def create_app() -> FastAPI:
         allow_methods=["*"], allow_headers=["*"],
     )
 
+    # servir /static (CSS/JS/HTML). check_dir=False evita erro se a pasta não existir.
+    app.mount("/static", StaticFiles(directory="static", html=True, check_dir=False), name="static")
+
     @app.get("/healthz")
     def healthz():
         return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
@@ -429,6 +463,15 @@ def create_app() -> FastAPI:
                 "permalink": f"/item/{item['id']}",
                 "keyword": item["keyword"],
             }
+
+    @app.get("/api/list")
+    def api_list(keyword: str = Query(..., description="Palavra-chave (slug ou normal)"),
+                 hours: int = Query(12, ge=1, le=48)):
+        """
+        Lista em JSON os itens recentes por palavra-chave (para o painel).
+        """
+        rows = db_list_by_keyword(slugify(keyword), since_hours=hours)
+        return {"items": rows}
 
     @app.get("/item/{id}", response_class=HTMLResponse)
     def view_item(id: str):
@@ -490,15 +533,15 @@ def create_app() -> FastAPI:
         parts.append("</ul>")
         return HTMLResponse("".join(parts))
 
-    @app.get("/", response_class=PlainTextResponse)
+    @app.get("/", response_class=HTMLResponse)
     def root():
-        return (
-            "OK - Endpoints:\n"
-            "POST /crawl {keywords: [\"sua palavra\"], hours_max: 12}\n"
-            "POST /add {url: \"https://...\", keyword: \"slug-opcional\"}\n"
-            "GET  /item/{id}\n"
-            "GET  /q/{slug}\n"
-            "GET  /healthz\n"
+        # tenta servir o painel; se não existir, mostra instrução
+        idx = Path("static/index.html")
+        if idx.exists():
+            return HTMLResponse(idx.read_text(encoding="utf-8"))
+        return HTMLResponse(
+            "<p>UI não encontrada. Crie <code>static/index.html</code> no projeto. "
+            "Endpoints: <code>/crawl</code>, <code>/add</code>, <code>/api/list</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
         )
 
     return app
@@ -511,4 +554,3 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
-
