@@ -10,56 +10,43 @@
       --danger:#ef4444; --border:#1f2630;
     }
     *{box-sizing:border-box}
-    body{
-      margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;
-      background:linear-gradient(180deg,#0b0d10,#0d1117 60%,#0b0d10);
-      color:var(--text);
-    }
+    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;
+      background:linear-gradient(180deg,#0b0d10,#0d1117 60%,#0b0d10);color:var(--text)}
     .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
     header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
-    .brand{font-weight:700;letter-spacing:.3px}
-    .muted{color:var(--muted)}
+    .brand{font-weight:700;letter-spacing:.3px}.muted{color:var(--muted)}
     .grid{display:grid;grid-template-columns:1fr;gap:16px}
-    @media (min-width:880px){.grid{grid-template-columns: 1.2fr .8fr}}
+    @media (min-width:880px){.grid{grid-template-columns:1.2fr .8fr}}
     .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 16px 14px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-    .card h3{margin:6px 0 12px}
-    .row{display:flex;gap:10px;flex-wrap:wrap}
-    input,button,select{
-      border:1px solid var(--border); background:#0f1318; color:var(--text);
-      border-radius:10px; padding:10px 12px; font-size:15px; outline:none;
-    }
-    input:focus,select:focus{border-color:#2a3748; box-shadow:0 0 0 3px rgba(77,163,255,.12)}
-    button{cursor:pointer; border:0; background:var(--acc); color:#07131f; font-weight:700}
+    .card h3{margin:6px 0 12px}.row{display:flex;gap:10px;flex-wrap:wrap}
+    input,button,select{border:1px solid var(--border);background:#0f1318;color:var(--text);border-radius:10px;padding:10px 12px;font-size:15px;outline:none}
+    input:focus,select:focus{border-color:#2a3748;box-shadow:0 0 0 3px rgba(77,163,255,.12)}
+    button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
     button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
     button.success{background:var(--acc2);color:#062012}
-    button.warn{background:var(--danger); color:white}
-    .hint{font-size:13px;color:var(--muted)}
-    .results{margin-top:10px; display:grid; grid-template-columns:1fr; gap:14px}
+    .hint{font-size:13px;color:var(--muted)}.results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}
     @media (min-width:720px){.results{grid-template-columns:1fr 1fr}}
-    .news{background:#0f1318;border:1px solid var(--border); border-radius:12px; overflow:hidden}
-    .news .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
-    .news img{width:100%; height:100%; object-fit:cover}
-    .news .cnt{padding:12px 12px 14px}
-    .news .title{font-weight:700;line-height:1.2;margin:0 0 8px}
-    .badge{display:inline-block; font-size:12px; color:#c8d3e1; background:#122233; border:1px solid #1b3049; padding:2px 8px; border-radius:999px}
-    .actions{display:flex; gap:8px; margin-top:10px; flex-wrap:wrap}
-    .sep{height:1px;background:#111821;border-top:1px solid #0e1520;margin:12px 0}
-    .status{font-size:14px}
+    .news{background:#0f1318;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
+    .news img{width:100%;height:100%;object-fit:cover}.cnt{padding:12px 12px 14px}
+    .title{font-weight:700;line-height:1.2;margin:0 0 8px}.badge{display:inline-block;font-size:12px;color:#c8d3e1;background:#122233;border:1px solid #1b3049;padding:2px 8px;border-radius:999px}
+    .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.status{font-size:14px}
     .spinner{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:blur(2px);z-index:999;align-items:center;justify-content:center}
     .spinner .dot{width:12px;height:12px;border-radius:50%;background:var(--acc);box-shadow:20px 0 0 var(--acc),-20px 0 0 var(--acc);animation:b 1s infinite ease-in-out}
     @keyframes b{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
     .toast{position:fixed;right:16px;bottom:16px;background:#0f1318;border:1px solid var(--border);padding:10px 14px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);display:none}
+    .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
+    .bar .sp{flex:1}
   </style>
 </head>
 <body>
   <div class="spinner" id="spinner"><div class="dot"></div></div>
   <div class="toast" id="toast"></div>
-
   <div class="wrap">
     <header>
       <div>
         <div class="brand">🗞️ News Automation</div>
-        <div class="muted">Coletor leve com painel — digite a pauta e veja os cards.</div>
+        <div class="muted">Coletor por palavra-chave ou link. Exporte em RSS/JSON.</div>
       </div>
       <a class="badge" href="/healthz" target="_blank">/healthz</a>
     </header>
@@ -68,7 +55,7 @@
       <div class="card">
         <h3>Buscar por palavras-chave</h3>
         <div class="row">
-          <input id="kw" placeholder="Ex.: prefeitura, economia, segurança pública" style="flex:1" />
+          <input id="kw" placeholder="Ex.: Ilhabela, economia, turismo" style="flex:1" />
           <select id="hours">
             <option value="12">Últimas 12h</option>
             <option value="8">Últimas 8h</option>
@@ -78,12 +65,17 @@
           </select>
           <button id="btnCrawl">Coletar agora</button>
         </div>
-        <div class="hint">Dica: se você usa a janela “5–12h”, rode a coleta a cada 5–6h.</div>
-        <div class="sep"></div>
-        <div class="row">
-          <input id="kwLive" placeholder="Ver resultados por palavra-chave (slug ou normal)" style="flex:1" />
+        <div class="bar">
+          <label><input type="checkbox" id="strict" checked /> Modo estrito (H1 + imagem + parágrafos)</label>
+          <span class="sp"></span>
+          <input id="kwLive" placeholder="Listar: palavra-chave (slug ou normal)" style="flex:1;max-width:380px" />
           <button class="secondary" id="btnList">Listar</button>
-          <button class="secondary" id="btnListAll">Listar 3 últimas palavras (atalho)</button>
+          <button class="secondary" id="btnListAll">Listar 3 últimas</button>
+        </div>
+        <div class="bar">
+          <div class="muted">Links:</div>
+          <a class="badge" id="lnkRss" target="_blank">RSS do slug</a>
+          <a class="badge" id="lnkJson" target="_blank">JSON do slug</a>
         </div>
         <div class="status" id="status"></div>
       </div>
@@ -91,13 +83,16 @@
       <div class="card">
         <h3>Adicionar link específico</h3>
         <div class="row">
-          <input id="linkUrl" placeholder="https://site.com/sua-noticia" style="flex:1" />
+          <input id="linkUrl" placeholder="https://site.com/noticia (ou l.facebook.com/l.php?u=...)" style="flex:1" />
         </div>
         <div class="row" style="margin-top:8px">
           <input id="linkKw" placeholder="Palavra-chave (ex.: meu-topico)" />
           <button class="success" id="btnAdd">Adicionar</button>
         </div>
-        <div class="hint">O item só entra se tiver <b>H1</b>, <b>imagem</b> e <b>parágrafos</b> válidos.</div>
+        <div class="hint">
+          • Funciona para páginas públicas. Facebook/Instagram/X que exigem login não retornam conteúdo. <br/>
+          • Links do tipo <code>l.facebook.com/l.php?u=...</code> e <code>t.co</code> são expandidos para o destino real.
+        </div>
       </div>
     </div>
 
@@ -129,7 +124,6 @@
       const title = item.title || "(sem título)";
       const pub = fmtDate(item.published_at);
       const created = fmtDate(item.created_at);
-
       return `
         <div class="news">
           <div class="img-wrap">${src ? `<img src="${src}" alt="">` : `<div class="muted">sem imagem</div>`}</div>
@@ -139,12 +133,10 @@
             <div class="actions">
               <a class="badge" href="${hrefItem}" target="_blank" rel="noopener">Ver Limpinho</a>
               ${orig ? `<a class="badge" href="${orig}" target="_blank" rel="noopener">Matéria Original</a>` : ""}
-              <button class="secondary" onclick="copyLink('${location.origin}${hrefItem}')">Copiar permalink</button>
             </div>
             <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created || "-"}</div>
           </div>
-        </div>
-      `;
+        </div>`;
     }
 
     function render(items){
@@ -163,21 +155,21 @@
       return data.items || [];
     }
 
-    async function crawl(keywords, hours){
+    async function crawl(keywords, hours, strict){
       const r = await fetch("/crawl", {
         method: "POST",
         headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ keywords, hours_max: hours })
+        body: JSON.stringify({ keywords, hours_max: hours, strict, require_image: strict })
       });
       if(!r.ok) throw new Error("Erro ao coletar");
       return r.json();
     }
 
-    async function addLink(url, keyword){
+    async function addLink(url, keyword, strict){
       const r = await fetch("/add", {
         method: "POST",
         headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ url, keyword })
+        body: JSON.stringify({ url, keyword, strict, require_image: strict })
       });
       if(!r.ok){
         const t = await r.text();
@@ -186,20 +178,29 @@
       return r.json();
     }
 
+    function updateExportLinks(slug){
+      const rss = `/rss/${encodeURIComponent(slug)}`;
+      const json = `/api/json/${encodeURIComponent(slug)}`;
+      $("#lnkRss").href = rss; $("#lnkJson").href = json;
+    }
+
     async function onCrawl(){
       const raw = $("#kw").value.trim();
       if(!raw){ showToast("Digite ao menos 1 palavra-chave"); return; }
       const hours = Number($("#hours").value || 12);
+      const strict = $("#strict").checked;
       const kws = raw.split(",").map(s=>s.trim()).filter(Boolean);
       lastKeywords = kws.slice(0,3);
-
       showSpinner(true); setStatus("Coletando…");
       try{
-        const data = await crawl(kws, hours);
+        await crawl(kws, hours, strict);
         const first = kws[0];
         const items = await apiList(first, hours);
         render(items);
-        setStatus(`Coletado. Palavras: <b>${kws.join(", ")}</b>. Mostrando: <b>${first}</b> (últimas ${hours}h).`);
+        const slug = first.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
+        $("#kwLive").value = slug;
+        updateExportLinks(slug);
+        setStatus(`Coletado. Mostrando: <b>${slug}</b> (últimas ${hours}h) • Modo ${strict ? "estrito" : "flexível"}.`);
         showToast("Coleta concluída");
       }catch(e){
         console.error(e); showToast("Falha na coleta");
@@ -215,6 +216,7 @@
       try{
         const items = await apiList(kw, hours);
         render(items);
+        updateExportLinks(kw);
         setStatus(`Listando: <b>${kw}</b> (últimas ${hours}h)`);
       }catch(e){
         console.error(e); showToast("Falha ao listar");
@@ -229,10 +231,10 @@
       try{
         let all = [];
         for(const kw of lastKeywords){
-          const items = await apiList(kw, hours);
+          const slug = kw.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
+          const items = await apiList(slug, hours);
           all = all.concat(items.slice(0,6));
         }
-        // ordena por created_at desc
         all.sort((a,b)=> (b.created_at||"").localeCompare(a.created_at||""));
         render(all.slice(0,12));
         setStatus(`Últimas de: <b>${lastKeywords.join(", ")}</b> (janela ${hours}h)`);
@@ -245,39 +247,35 @@
     async function onAdd(){
       const url = $("#linkUrl").value.trim();
       const kw = ($("#linkKw").value.trim()) || "geral";
+      const strict = $("#strict").checked;
       if(!url){ showToast("Cole o link da matéria"); return; }
       showSpinner(true); setStatus("Adicionando link…");
       try{
-        const res = await addLink(url, kw);
+        await addLink(url, kw, strict);
         const hours = Number($("#hours").value || 12);
-        const items = await apiList(kw, hours);
+        const slug = kw.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
+        const items = await apiList(slug, hours);
         render(items);
-        setStatus(`Adicionado com sucesso. Mostrando: <b>${kw}</b>.`);
+        $("#kwLive").value = slug; updateExportLinks(slug);
+        setStatus(`Adicionado com sucesso. Mostrando: <b>${slug}</b>.`);
         showToast("Link adicionado!");
-        $("#kwLive").value = kw;
       }catch(e){
-        console.error(e); showToast("Falha ao adicionar");
+        console.error(e);
+        showToast("Falha ao adicionar");
         setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
       }finally{ showSpinner(false); }
     }
 
-    function copyLink(link){
-      navigator.clipboard.writeText(link).then(()=> showToast("Permalink copiado"));
-    }
-
-    // binds
     $("#btnCrawl").addEventListener("click", onCrawl);
     $("#btnList").addEventListener("click", onList);
     $("#btnListAll").addEventListener("click", onListAll);
     $("#btnAdd").addEventListener("click", onAdd);
 
-    // UX: Enter na caixa de palavra-chave lista
     $("#kwLive").addEventListener("keydown", e=>{ if(e.key==="Enter") onList(); });
     $("#kw").addEventListener("keydown", e=>{ if(e.key==="Enter") onCrawl(); });
     $("#linkUrl").addEventListener("keydown", e=>{ if(e.key==="Enter") onAdd(); });
 
-    // Estado inicial
-    setStatus('Pronto. Use "Coletar agora" ou "Adicionar link".');
+    setStatus('Pronto. Use "Coletar agora" (palavras-chave) ou "Adicionar link".');
   </script>
 </body>
 </html>
