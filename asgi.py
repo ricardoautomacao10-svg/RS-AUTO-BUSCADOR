@@ -1,2 +1,4 @@
 # asgi.py
-from news_automation import app  # importa o app FastAPI do seu arquivo
+from news_automation import create_app
+
+app = create_app()
