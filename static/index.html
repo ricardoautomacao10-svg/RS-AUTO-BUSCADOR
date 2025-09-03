@@ -1,281 +1,161 @@
 <!doctype html>
 <html lang="pt-BR">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>News Automation — Painel</title>
-  <style>
-    :root{
-      --bg:#0b0d10; --card:#12151a; --muted:#9aa4b2; --text:#e6ebf2; --acc:#4da3ff; --acc2:#22c55e;
-      --danger:#ef4444; --border:#1f2630;
-    }
-    *{box-sizing:border-box}
-    body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;
-      background:linear-gradient(180deg,#0b0d10,#0d1117 60%,#0b0d10);color:var(--text)}
-    .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
-    header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
-    .brand{font-weight:700;letter-spacing:.3px}.muted{color:var(--muted)}
-    .grid{display:grid;grid-template-columns:1fr;gap:16px}
-    @media (min-width:880px){.grid{grid-template-columns:1.2fr .8fr}}
-    .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px 16px 14px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
-    .card h3{margin:6px 0 12px}.row{display:flex;gap:10px;flex-wrap:wrap}
-    input,button,select{border:1px solid var(--border);background:#0f1318;color:var(--text);border-radius:10px;padding:10px 12px;font-size:15px;outline:none}
-    input:focus,select:focus{border-color:#2a3748;box-shadow:0 0 0 3px rgba(77,163,255,.12)}
-    button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
-    button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
-    button.success{background:var(--acc2);color:#062012}
-    .hint{font-size:13px;color:var(--muted)}.results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}
-    @media (min-width:720px){.results{grid-template-columns:1fr 1fr}}
-    .news{background:#0f1318;border:1px solid var(--border);border-radius:12px;overflow:hidden}
-    .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
-    .news img{width:100%;height:100%;object-fit:cover}.cnt{padding:12px 12px 14px}
-    .title{font-weight:700;line-height:1.2;margin:0 0 8px}.badge{display:inline-block;font-size:12px;color:#c8d3e1;background:#122233;border:1px solid #1b3049;padding:2px 8px;border-radius:999px}
-    .actions{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}.status{font-size:14px}
-    .spinner{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);backdrop-filter:blur(2px);z-index:999;align-items:center;justify-content:center}
-    .spinner .dot{width:12px;height:12px;border-radius:50%;background:var(--acc);box-shadow:20px 0 0 var(--acc),-20px 0 0 var(--acc);animation:b 1s infinite ease-in-out}
-    @keyframes b{0%,80%,100%{transform:scale(0)}40%{transform:scale(1)}}
-    .toast{position:fixed;right:16px;bottom:16px;background:#0f1318;border:1px solid var(--border);padding:10px 14px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.4);display:none}
-    .bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px}
-    .bar .sp{flex:1}
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>News Automation — Painel</title>
+<style>
+  :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--acc2:#22c55e;--border:#1f2630}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
+  .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
+  header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
+  .muted{color:var(--muted)} .brand{font-weight:700}
+  .grid{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:880px){.grid{grid-template-columns:1.2fr .8fr}}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .row{display:flex;gap:10px;flex-wrap:wrap}
+  input,button,select{border:1px solid var(--border);background:#0f1318;color:var(--text);border-radius:10px;padding:10px 12px;font-size:15px;outline:none}
+  button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
+  button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
+  .results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}@media(min-width:720px){.results{grid-template-columns:1fr 1fr}}
+  .news{background:#0f1318;border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
+  .news img{width:100%;height:100%;object-fit:cover}.cnt{padding:12px 12px 14px}
+  .title{font-weight:700;line-height:1.2;margin:0 0 8px}
+  .badge{display:inline-block;font-size:12px;color:#c8d3e1;background:#122233;border:1px solid #1b3049;padding:2px 8px;border-radius:999px}
+  .status{font-size:14px;color:var(--muted)}
+</style>
 </head>
 <body>
-  <div class="spinner" id="spinner"><div class="dot"></div></div>
-  <div class="toast" id="toast"></div>
-  <div class="wrap">
-    <header>
-      <div>
-        <div class="brand">🗞️ News Automation</div>
-        <div class="muted">Coletor por palavra-chave ou link. Exporte em RSS/JSON.</div>
-      </div>
-      <a class="badge" href="/healthz" target="_blank">/healthz</a>
-    </header>
+<div class="wrap">
+  <header>
+    <div><div class="brand">🗞️ News Automation</div><div class="muted">Coletor por palavra-chave ou link. Exporte em RSS/JSON.</div></div>
+    <a class="badge" href="/healthz" target="_blank">/healthz</a>
+  </header>
 
-    <div class="grid">
-      <div class="card">
-        <h3>Buscar por palavras-chave</h3>
-        <div class="row">
-          <input id="kw" placeholder="Ex.: Ilhabela, economia, turismo" style="flex:1" />
-          <select id="hours">
-            <option value="12">Últimas 12h</option>
-            <option value="8">Últimas 8h</option>
-            <option value="6">Últimas 6h</option>
-            <option value="5">Últimas 5h</option>
-            <option value="24">Últimas 24h</option>
-          </select>
-          <button id="btnCrawl">Coletar agora</button>
-        </div>
-        <div class="bar">
-          <label><input type="checkbox" id="strict" checked /> Modo estrito (H1 + imagem + parágrafos)</label>
-          <span class="sp"></span>
-          <input id="kwLive" placeholder="Listar: palavra-chave (slug ou normal)" style="flex:1;max-width:380px" />
-          <button class="secondary" id="btnList">Listar</button>
-          <button class="secondary" id="btnListAll">Listar 3 últimas</button>
-        </div>
-        <div class="bar">
-          <div class="muted">Links:</div>
-          <a class="badge" id="lnkRss" target="_blank">RSS do slug</a>
-          <a class="badge" id="lnkJson" target="_blank">JSON do slug</a>
-        </div>
-        <div class="status" id="status"></div>
+  <div class="grid">
+    <div class="card">
+      <h3>Buscar por palavras-chave</h3>
+      <div class="row">
+        <input id="kw" placeholder="Ex.: brasil, economia, turismo" style="flex:1" />
+        <select id="hours">
+          <option value="12">Últimas 12h</option>
+          <option value="8">Últimas 8h</option>
+          <option value="6">Últimas 6h</option>
+          <option value="24">Últimas 24h</option>
+        </select>
+        <button id="btnCrawl">Coletar agora</button>
       </div>
-
-      <div class="card">
-        <h3>Adicionar link específico</h3>
-        <div class="row">
-          <input id="linkUrl" placeholder="https://site.com/noticia (ou l.facebook.com/l.php?u=...)" style="flex:1" />
-        </div>
-        <div class="row" style="margin-top:8px">
-          <input id="linkKw" placeholder="Palavra-chave (ex.: meu-topico)" />
-          <button class="success" id="btnAdd">Adicionar</button>
-        </div>
-        <div class="hint">
-          • Funciona para páginas públicas. Facebook/Instagram/X que exigem login não retornam conteúdo. <br/>
-          • Links do tipo <code>l.facebook.com/l.php?u=...</code> e <code>t.co</code> são expandidos para o destino real.
-        </div>
+      <div class="row" style="margin-top:8px">
+        <label><input type="checkbox" id="reqH1" checked> Exigir H1/título</label>
+        <label><input type="checkbox" id="reqImg"> Exigir imagem</label>
+        <span style="flex:1"></span>
+        <input id="kwLive" placeholder="Listar: slug/palavra" style="flex:1;max-width:380px" />
+        <button class="secondary" id="btnList">Listar</button>
       </div>
+      <div class="row" style="margin-top:8px">
+        <span class="muted">Links do slug:</span>
+        <a class="badge" id="lnkRss" target="_blank">RSS</a>
+        <a class="badge" id="lnkJson" target="_blank">JSON</a>
+      </div>
+      <div class="status" id="status"></div>
     </div>
 
-    <div style="margin:18px 0 8px" class="muted">Resultados</div>
-    <div class="results" id="results"></div>
+    <div class="card">
+      <h3>Adicionar link específico</h3>
+      <div class="row"><input id="linkUrl" placeholder="https://site.com/noticia (ou l.facebook.com/l.php?u=...)" style="flex:1" /></div>
+      <div class="row" style="margin-top:8px">
+        <input id="linkKw" placeholder="Palavra-chave (ex.: meu-topico)" />
+        <button class="secondary" id="btnAdd">Adicionar</button>
+      </div>
+      <div class="status" id="statusAdd"></div>
+    </div>
   </div>
 
-  <script>
-    const $ = s => document.querySelector(s);
-    const spinner = $("#spinner");
-    const toast = $("#toast");
-    let lastKeywords = [];
+  <div style="margin:18px 0 8px" class="muted">Resultados</div>
+  <div class="results" id="results"></div>
+</div>
 
-    function showSpinner(v){ spinner.style.display = v ? "flex" : "none"; }
-    function showToast(msg){ toast.textContent = msg; toast.style.display = "block"; setTimeout(()=>toast.style.display="none", 2600); }
-    function setStatus(html){ $("#status").innerHTML = html; }
+<script>
+const $ = s => document.querySelector(s);
+const fmtDate = iso => iso ? new Date(iso).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}) : "";
+const slugify = s => s.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
 
-    function fmtDate(iso){
-      if(!iso) return "";
-      const d = new Date(iso);
-      return d.toLocaleString("pt-BR",{dateStyle:"short", timeStyle:"short"});
-    }
+function card(it){
+  const hrefItem = `/item/${it.id}`;
+  const src = it.image || "";
+  const srcName = it.source_name || "";
+  const title = it.title || "(sem título)";
+  const pub = fmtDate(it.published_at);
+  const created = fmtDate(it.created_at);
+  return `<div class="news">
+    <div class="img-wrap">${src?`<img src="${src}" alt="">`:`<div class="muted">sem imagem</div>`}</div>
+    <div class="cnt">
+      <div class="title"><a href="${hrefItem}" target="_blank" rel="noopener">${title}</a></div>
+      <div class="muted" style="font-size:13px">${srcName}${pub?" • "+pub:""}</div>
+      <div style="margin-top:6px"><a class="badge" href="${hrefItem}" target="_blank">Ver Limpinho</a> <a class="badge" href="${it.url}" target="_blank">Matéria Original</a></div>
+      <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created||"-"}</div>
+    </div>
+  </div>`;
+}
 
-    function card(item){
-      const hrefItem = `/item/${item.id}`;
-      const src = item.image || "";
-      const srcName = item.source_name || "";
-      const orig = item.url || "#";
-      const title = item.title || "(sem título)";
-      const pub = fmtDate(item.published_at);
-      const created = fmtDate(item.created_at);
-      return `
-        <div class="news">
-          <div class="img-wrap">${src ? `<img src="${src}" alt="">` : `<div class="muted">sem imagem</div>`}</div>
-          <div class="cnt">
-            <div class="title"><a href="${hrefItem}" target="_blank" rel="noopener">${title}</a></div>
-            <div class="muted" style="font-size:13px">${srcName}${pub ? " • " + pub : ""}</div>
-            <div class="actions">
-              <a class="badge" href="${hrefItem}" target="_blank" rel="noopener">Ver Limpinho</a>
-              ${orig ? `<a class="badge" href="${orig}" target="_blank" rel="noopener">Matéria Original</a>` : ""}
-            </div>
-            <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created || "-"}</div>
-          </div>
-        </div>`;
-    }
+async function apiList(keyword, hours){
+  const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${hours}`);
+  if(!r.ok) throw new Error("Erro ao listar"); const d = await r.json(); return d.items||[];
+}
+async function crawl(keywords, hours, require_h1, require_image){
+  const r = await fetch("/crawl", {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ keywords, hours_max: hours, require_h1, require_image })
+  });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+async function addLink(url, keyword, require_h1, require_image){
+  const r = await fetch("/add", {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ url, keyword, require_h1, require_image })
+  });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+function render(items){ $("#results").innerHTML = (items&&items.length)? items.map(card).join("") : `<div class="muted">Sem resultados para exibir.</div>`; }
+function updateExportLinks(slug){ $("#lnkRss").href=`/rss/${slug}`; $("#lnkJson").href=`/api/json/${slug}`; }
 
-    function render(items){
-      const box = $("#results");
-      if(!items || !items.length){
-        box.innerHTML = `<div class="muted">Sem resultados para exibir.</div>`;
-        return;
-      }
-      box.innerHTML = items.map(card).join("");
-    }
+$("#btnCrawl").onclick = async () => {
+  const raw = $("#kw").value.trim(); if(!raw) return alert("Digite palavras-chave (separe por vírgula)");
+  const hours = Number($("#hours").value||12); const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked;
+  const kws = raw.split(",").map(s=>s.trim()).filter(Boolean);
+  const firstSlug = slugify(kws[0]); $("#kwLive").value = firstSlug; updateExportLinks(firstSlug);
+  $("#status").textContent = "Coletando…";
+  try{
+    const data = await crawl(kws, hours, reqH1, reqImg);
+    const stats = data.stats[firstSlug] || {};
+    const items = await apiList(firstSlug, hours);
+    render(items);
+    $("#status").innerHTML = `OK. Mostrando: <b>${firstSlug}</b> (janela ${hours}h). `+
+      `Passaram: <b>${stats.ok||0}</b> • Descartes — H1: <b>${stats.no_h1||0}</b>, Img: <b>${stats.no_image||0}</b>, P: <b>${stats.no_paragraphs||0}</b>, Fetch: <b>${stats.fetch_fail||0}</b>`;
+  }catch(e){ $("#status").textContent = "Erro: "+e.message; }
+};
 
-    async function apiList(keyword, hours){
-      const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${encodeURIComponent(hours)}`);
-      if(!r.ok) throw new Error("Erro ao listar");
-      const data = await r.json();
-      return data.items || [];
-    }
+$("#btnList").onclick = async () => {
+  const kw = $("#kwLive").value.trim(); if(!kw) return alert("Informe o slug para listar");
+  const hours = Number($("#hours").value||12);
+  try{ const items = await apiList(kw, hours); render(items); updateExportLinks(kw); $("#status").innerHTML = `Listando: <b>${kw}</b> (últimas ${hours}h)`; }
+  catch(e){ $("#status").textContent = "Erro: "+e.message; }
+};
 
-    async function crawl(keywords, hours, strict){
-      const r = await fetch("/crawl", {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ keywords, hours_max: hours, strict, require_image: strict })
-      });
-      if(!r.ok) throw new Error("Erro ao coletar");
-      return r.json();
-    }
-
-    async function addLink(url, keyword, strict){
-      const r = await fetch("/add", {
-        method: "POST",
-        headers: { "Content-Type":"application/json" },
-        body: JSON.stringify({ url, keyword, strict, require_image: strict })
-      });
-      if(!r.ok){
-        const t = await r.text();
-        throw new Error(t || "Erro ao adicionar link");
-      }
-      return r.json();
-    }
-
-    function updateExportLinks(slug){
-      const rss = `/rss/${encodeURIComponent(slug)}`;
-      const json = `/api/json/${encodeURIComponent(slug)}`;
-      $("#lnkRss").href = rss; $("#lnkJson").href = json;
-    }
-
-    async function onCrawl(){
-      const raw = $("#kw").value.trim();
-      if(!raw){ showToast("Digite ao menos 1 palavra-chave"); return; }
-      const hours = Number($("#hours").value || 12);
-      const strict = $("#strict").checked;
-      const kws = raw.split(",").map(s=>s.trim()).filter(Boolean);
-      lastKeywords = kws.slice(0,3);
-      showSpinner(true); setStatus("Coletando…");
-      try{
-        await crawl(kws, hours, strict);
-        const first = kws[0];
-        const items = await apiList(first, hours);
-        render(items);
-        const slug = first.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
-        $("#kwLive").value = slug;
-        updateExportLinks(slug);
-        setStatus(`Coletado. Mostrando: <b>${slug}</b> (últimas ${hours}h) • Modo ${strict ? "estrito" : "flexível"}.`);
-        showToast("Coleta concluída");
-      }catch(e){
-        console.error(e); showToast("Falha na coleta");
-        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
-      }finally{ showSpinner(false); }
-    }
-
-    async function onList(){
-      const kw = $("#kwLive").value.trim();
-      const hours = Number($("#hours").value || 12);
-      if(!kw){ showToast("Informe a palavra-chave para listar"); return; }
-      showSpinner(true); setStatus("Listando…");
-      try{
-        const items = await apiList(kw, hours);
-        render(items);
-        updateExportLinks(kw);
-        setStatus(`Listando: <b>${kw}</b> (últimas ${hours}h)`);
-      }catch(e){
-        console.error(e); showToast("Falha ao listar");
-        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
-      }finally{ showSpinner(false); }
-    }
-
-    async function onListAll(){
-      if(!lastKeywords.length){ showToast("Faça uma coleta primeiro"); return; }
-      const hours = Number($("#hours").value || 12);
-      showSpinner(true); setStatus("Listando últimas palavras…");
-      try{
-        let all = [];
-        for(const kw of lastKeywords){
-          const slug = kw.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
-          const items = await apiList(slug, hours);
-          all = all.concat(items.slice(0,6));
-        }
-        all.sort((a,b)=> (b.created_at||"").localeCompare(a.created_at||""));
-        render(all.slice(0,12));
-        setStatus(`Últimas de: <b>${lastKeywords.join(", ")}</b> (janela ${hours}h)`);
-      }catch(e){
-        console.error(e); showToast("Falha ao listar");
-        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
-      }finally{ showSpinner(false); }
-    }
-
-    async function onAdd(){
-      const url = $("#linkUrl").value.trim();
-      const kw = ($("#linkKw").value.trim()) || "geral";
-      const strict = $("#strict").checked;
-      if(!url){ showToast("Cole o link da matéria"); return; }
-      showSpinner(true); setStatus("Adicionando link…");
-      try{
-        await addLink(url, kw, strict);
-        const hours = Number($("#hours").value || 12);
-        const slug = kw.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
-        const items = await apiList(slug, hours);
-        render(items);
-        $("#kwLive").value = slug; updateExportLinks(slug);
-        setStatus(`Adicionado com sucesso. Mostrando: <b>${slug}</b>.`);
-        showToast("Link adicionado!");
-      }catch(e){
-        console.error(e);
-        showToast("Falha ao adicionar");
-        setStatus(`<span style="color:#f88">Erro: ${e.message}</span>`);
-      }finally{ showSpinner(false); }
-    }
-
-    $("#btnCrawl").addEventListener("click", onCrawl);
-    $("#btnList").addEventListener("click", onList);
-    $("#btnListAll").addEventListener("click", onListAll);
-    $("#btnAdd").addEventListener("click", onAdd);
-
-    $("#kwLive").addEventListener("keydown", e=>{ if(e.key==="Enter") onList(); });
-    $("#kw").addEventListener("keydown", e=>{ if(e.key==="Enter") onCrawl(); });
-    $("#linkUrl").addEventListener("keydown", e=>{ if(e.key==="Enter") onAdd(); });
-
-    setStatus('Pronto. Use "Coletar agora" (palavras-chave) ou "Adicionar link".');
-  </script>
+$("#btnAdd").onclick = async () => {
+  const url = $("#linkUrl").value.trim(); if(!url) return alert("Cole o link");
+  const kw = ($("#linkKw").value.trim()) || "geral";
+  const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked;
+  $("#statusAdd").textContent = "Adicionando…";
+  try{
+    await addLink(url, kw, reqH1, reqImg);
+    const slug = slugify(kw); const hours = Number($("#hours").value||12);
+    const items = await apiList(slug, hours);
+    render(items); $("#kwLive").value = slug; updateExportLinks(slug);
+    $("#statusAdd").textContent = "Link adicionado.";
+  }catch(e){ $("#statusAdd").textContent = "Erro: "+e.message; }
+};
+</script>
 </body>
 </html>
