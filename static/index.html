@@ -6,15 +6,14 @@
 <title>News Automation — Painel</title>
 <style>
   :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--acc2:#22c55e;--border:#1f2630}
-  *{box-sizing:border-box}
-  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
+  *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
   .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
   header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
   .muted{color:var(--muted)} .brand{font-weight:700}
   .grid{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:880px){.grid{grid-template-columns:1.2fr .8fr}}
   .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
   .row{display:flex;gap:10px;flex-wrap:wrap}
-  input,button,select{border:1px solid var(--border);background:#0f1318;color:var(--text);border-radius:10px;padding:10px 12px;font-size:15px;outline:none}
+  input,button,select{border:1px solid var(--border);background:#0f1318;color:#e6ebf2;border-radius:10px;padding:10px 12px;font-size:15px;outline:none}
   button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
   button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
   .results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}@media(min-width:720px){.results{grid-template-columns:1fr 1fr}}
@@ -24,6 +23,10 @@
   .title{font-weight:700;line-height:1.2;margin:0 0 8px}
   .badge{display:inline-block;font-size:12px;color:#c8d3e1;background:#122233;border:1px solid #1b3049;padding:2px 8px;border-radius:999px}
   .status{font-size:14px;color:var(--muted)}
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+  th,td{border:1px solid var(--border);padding:6px 8px;text-align:left}
+  th{background:#0f141a}
+  .ok{color:#22c55e}.fail{color:#ef4444}
 </style>
 </head>
 <body>
@@ -37,18 +40,17 @@
     <div class="card">
       <h3>Buscar por palavras-chave</h3>
       <div class="row">
-        <input id="kw" placeholder="Ex.: brasil, economia, turismo" style="flex:1" />
+        <input id="kw" placeholder="Ex.: ilhabela, brasil, economia" style="flex:1" />
         <select id="hours">
-          <option value="12">Últimas 12h</option>
-          <option value="8">Últimas 8h</option>
-          <option value="6">Últimas 6h</option>
-          <option value="24">Últimas 24h</option>
+          <option value="12">Últimas 12h</option><option value="8">Últimas 8h</option>
+          <option value="6">Últimas 6h</option><option value="24">Últimas 24h</option>
         </select>
         <button id="btnCrawl">Coletar agora</button>
       </div>
       <div class="row" style="margin-top:8px">
         <label><input type="checkbox" id="reqH1" checked> Exigir H1/título</label>
         <label><input type="checkbox" id="reqImg"> Exigir imagem</label>
+        <label><input type="checkbox" id="dbg"> Debug</label>
         <span style="flex:1"></span>
         <input id="kwLive" placeholder="Listar: slug/palavra" style="flex:1;max-width:380px" />
         <button class="secondary" id="btnList">Listar</button>
@@ -59,6 +61,7 @@
         <a class="badge" id="lnkJson" target="_blank">JSON</a>
       </div>
       <div class="status" id="status"></div>
+      <div id="debugBox"></div>
     </div>
 
     <div class="card">
@@ -103,13 +106,16 @@ async function apiList(keyword, hours){
   const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${hours}`);
   if(!r.ok) throw new Error("Erro ao listar"); const d = await r.json(); return d.items||[];
 }
-async function crawl(keywords, hours, require_h1, require_image){
-  const r = await fetch("/crawl", {
+
+async function crawlApi(keywords, hours, require_h1, require_image, debugMode){
+  const url = debugMode ? "/crawl_debug" : "/crawl";
+  const r = await fetch(url, {
     method:"POST", headers:{ "Content-Type":"application/json" },
     body: JSON.stringify({ keywords, hours_max: hours, require_h1, require_image })
   });
   if(!r.ok) throw new Error(await r.text()); return r.json();
 }
+
 async function addLink(url, keyword, require_h1, require_image){
   const r = await fetch("/add", {
     method:"POST", headers:{ "Content-Type":"application/json" },
@@ -117,22 +123,49 @@ async function addLink(url, keyword, require_h1, require_image){
   });
   if(!r.ok) throw new Error(await r.text()); return r.json();
 }
+
 function render(items){ $("#results").innerHTML = (items&&items.length)? items.map(card).join("") : `<div class="muted">Sem resultados para exibir.</div>`; }
 function updateExportLinks(slug){ $("#lnkRss").href=`/rss/${slug}`; $("#lnkJson").href=`/api/json/${slug}`; }
 
+function renderDebugTable(arr){
+  if(!arr || !arr.length){ $("#debugBox").innerHTML = ""; return; }
+  let rows = arr.map(d=>{
+    const f = d.fetch||{};
+    const st = d.decision==="ok" ? `<span class="ok">OK</span>` : `<span class="fail">${d.decision||"?"}</span>`;
+    const h1 = d.title_found?"sim":"não";
+    const img = d.image_found?"sim":"não";
+    const p = d.p_count||0;
+    const http = `${f.status||"-"} ${f.ctype||""}`;
+    const url = (f.final_url||d.link||"");
+    return `<tr>
+      <td>${st}</td><td>${http}</td><td>${h1}</td><td>${img}</td><td>${p}</td>
+      <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+        <a href="${url}" target="_blank" rel="noopener">${url}</a>
+      </td>
+    </tr>`;
+  }).join("");
+  $("#debugBox").innerHTML = `
+    <table>
+      <thead><tr><th>Status</th><th>HTTP/Tipo</th><th>H1</th><th>Img</th><th>P</th><th>URL final</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 $("#btnCrawl").onclick = async () => {
   const raw = $("#kw").value.trim(); if(!raw) return alert("Digite palavras-chave (separe por vírgula)");
-  const hours = Number($("#hours").value||12); const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked;
+  const hours = Number($("#hours").value||12);
+  const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked; const debug=$("#dbg").checked;
   const kws = raw.split(",").map(s=>s.trim()).filter(Boolean);
   const firstSlug = slugify(kws[0]); $("#kwLive").value = firstSlug; updateExportLinks(firstSlug);
-  $("#status").textContent = "Coletando…";
+  $("#status").textContent = "Coletando…"; $("#debugBox").innerHTML = "";
   try{
-    const data = await crawl(kws, hours, reqH1, reqImg);
+    const data = await crawlApi(kws, hours, reqH1, reqImg, debug);
     const stats = data.stats[firstSlug] || {};
     const items = await apiList(firstSlug, hours);
     render(items);
     $("#status").innerHTML = `OK. Mostrando: <b>${firstSlug}</b> (janela ${hours}h). `+
       `Passaram: <b>${stats.ok||0}</b> • Descartes — H1: <b>${stats.no_h1||0}</b>, Img: <b>${stats.no_image||0}</b>, P: <b>${stats.no_paragraphs||0}</b>, Fetch: <b>${stats.fetch_fail||0}</b>`;
+    if(data.details && data.details[firstSlug]) renderDebugTable(data.details[firstSlug]);
   }catch(e){ $("#status").textContent = "Erro: "+e.message; }
 };
 
