@@ -1,8 +1,10 @@
-Flask>=2.0
-requests
-beautifulsoup4
-Pillow
-cloudinary
+fastapi
+uvicorn[standard]
+httpx
 feedparser
-gunicorn
+beautifulsoup4
+trafilatura
+python-slugify
+readability-lxml
 lxml
+boilerpy3
