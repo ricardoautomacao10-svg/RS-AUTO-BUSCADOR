@@ -5,15 +5,15 @@
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>News Automation — Painel</title>
 <style>
-  :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--acc2:#22c55e;--border:#1f2630}
+  :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--border:#1f2630}
   *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
   .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
   header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
   .muted{color:var(--muted)} .brand{font-weight:700}
   .grid{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:880px){.grid{grid-template-columns:1.2fr .8fr}}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
   .row{display:flex;gap:10px;flex-wrap:wrap}
-  input,button,select{border:1px solid var(--border);background:#0f1318;color:#e6ebf2;border-radius:10px;padding:10px 12px;font-size:15px;outline:none}
+  input,button,select{border:1px solid var(--border);background:#0f1318;color:#e6ebf2;border-radius:10px;padding:10px 12px;font-size:15px}
   button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
   button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
   .results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}@media(min-width:720px){.results{grid-template-columns:1fr 1fr}}
@@ -25,8 +25,7 @@
   .status{font-size:14px;color:var(--muted)}
   table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
   th,td{border:1px solid var(--border);padding:6px 8px;text-align:left}
-  th{background:#0f141a}
-  .ok{color:#22c55e}.fail{color:#ef4444}
+  th{background:#0f141a}.ok{color:#22c55e}.fail{color:#ef4444}
 </style>
 </head>
 <body>
@@ -106,7 +105,6 @@ async function apiList(keyword, hours){
   const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${hours}`);
   if(!r.ok) throw new Error("Erro ao listar"); const d = await r.json(); return d.items||[];
 }
-
 async function crawlApi(keywords, hours, require_h1, require_image, debugMode){
   const url = debugMode ? "/crawl_debug" : "/crawl";
   const r = await fetch(url, {
@@ -115,7 +113,6 @@ async function crawlApi(keywords, hours, require_h1, require_image, debugMode){
   });
   if(!r.ok) throw new Error(await r.text()); return r.json();
 }
-
 async function addLink(url, keyword, require_h1, require_image){
   const r = await fetch("/add", {
     method:"POST", headers:{ "Content-Type":"application/json" },
@@ -123,7 +120,6 @@ async function addLink(url, keyword, require_h1, require_image){
   });
   if(!r.ok) throw new Error(await r.text()); return r.json();
 }
-
 function render(items){ $("#results").innerHTML = (items&&items.length)? items.map(card).join("") : `<div class="muted">Sem resultados para exibir.</div>`; }
 function updateExportLinks(slug){ $("#lnkRss").href=`/rss/${slug}`; $("#lnkJson").href=`/api/json/${slug}`; }
 
@@ -139,7 +135,7 @@ function renderDebugTable(arr){
     const url = (f.final_url||d.link||"");
     return `<tr>
       <td>${st}</td><td>${http}</td><td>${h1}</td><td>${img}</td><td>${p}</td>
-      <td style="max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      <td style="max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
         <a href="${url}" target="_blank" rel="noopener">${url}</a>
       </td>
     </tr>`;
