@@ -5,3 +5,6 @@ feedparser
 beautifulsoup4
 trafilatura
 python-slugify
+readability-lxml
+lxml
+boilerpy3
