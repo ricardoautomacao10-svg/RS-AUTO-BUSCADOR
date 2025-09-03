@@ -1,6 +1,7 @@
 # news_automation.py
-# Coletor de notícias: Google News + GDELT, extração robusta (Schema.org, Readability, Trafilatura, Boilerpipe),
-# AMP, "seguir link externo" do Google News, debug detalhado, RSS/JSON, UI em /static.
+# Google News + GDELT → segue link externo real (meta refresh, <a>, regex),
+# extração robusta (Schema.org, Readability, Trafilatura, Boilerpipe), AMP fallback,
+# modo Debug, RSS/JSON e páginas HTML.
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,7 +24,7 @@ from boilerpy3 import extractors as boiler_extractors
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 APP_TITLE = "News Automation"
 
-# slugify (fallback)
+# slugify (fallback simples)
 try:
     from slugify import slugify
 except Exception:
@@ -48,14 +49,14 @@ def now_utc() -> datetime:
 def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
-def stable_id(url: str) -> str:
-    h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
-    return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
-
 def from_pubdate_struct(tm: Any) -> Optional[datetime]:
     if not tm: return None
     try: return datetime(*tm[:6], tzinfo=timezone.utc)
     except Exception: return None
+
+def stable_id(url: str) -> str:
+    h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
+    return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
 
 def hostname_from_url(url: str) -> str:
     try:
@@ -63,6 +64,13 @@ def hostname_from_url(url: str) -> str:
         return re.sub(r"^www\.", "", host)
     except Exception:
         return "fonte"
+
+def is_google_news(u: str) -> bool:
+    try:
+        host = urlparse(u).netloc.lower()
+        return "news.google." in host
+    except Exception:
+        return False
 
 BAD_SNIPPETS = [
     "leia mais","leia também","saiba mais","veja também","veja mais","continue lendo","continue a ler",
@@ -95,7 +103,6 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[str], Dict[str, Any]]:
-    """GET com debug info."""
     info = {"request_url": url, "ok": False, "status": None, "ctype": "", "final_url": url, "error": None}
     try:
         r = await client.get(
@@ -103,7 +110,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.4",
+                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.5",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -250,17 +257,32 @@ def unwrap_special_links(url: str) -> str:
 
 def extract_external_from_gnews(html: str, base_url: str) -> Optional[str]:
     """
-    Nas páginas https://news.google.com/articles/... o conteúdo é mínimo.
-    Pegamos o primeiro <a href> externo (não google) e seguimos nele.
+    Pega o link da matéria original a partir da página do Google News.
+    Ordem: <meta http-equiv="refresh"> → <a href> externo → regex http(s) não-Google.
     """
     try:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html or "", "html.parser")
+        # 1) meta refresh: content="0;url=https://site.com/..."
+        meta = soup.find("meta", attrs={"http-equiv": lambda v: v and v.lower() == "refresh"})
+        if meta and meta.get("content"):
+            m = re.search(r"url=(.+)", meta["content"], flags=re.I)
+            if m:
+                return urljoin(base_url, m.group(1).strip().strip('\'"'))
+
+        # 2) primeiro <a> externo de verdade
         for a in soup.find_all("a", href=True):
             href = urljoin(base_url, a["href"])
-            u = urlparse(href)
-            host = u.netloc.lower()
+            u = urlparse(href); host = u.netloc.lower()
             if not href.startswith(("http://","https://")): continue
-            if "news.google." in host or host.endswith(".google.com") or host.endswith(".gstatic.com"): 
+            if "google" in host or host.endswith(".google.com") or "gstatic.com" in host: 
+                continue
+            return href
+
+        # 3) regex geral em HTML (pega primeira URL não-Google)
+        for m in re.finditer(r'https?://[^\s\'"<>]+', html or ""):
+            href = m.group(0)
+            host = urlparse(href).netloc.lower()
+            if "google" in host or "gstatic.com" in host: 
                 continue
             return href
     except Exception:
@@ -349,7 +371,7 @@ def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.4"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.5"})
         if r.status_code != 200: return []
         js = r.json()
         arts = js.get("articles", [])
@@ -382,8 +404,8 @@ async def process_article(
         if sc.get("paragraphs"): paragraphs = sc["paragraphs"]
         if not paragraphs: paragraphs = paragraphs_from_html(html)
 
-    # 2) Se é página do Google News e não achamos parágrafos, seguir link externo real
-    if (not paragraphs) and info.get("final_url") and "news.google.com" in urlparse(info["final_url"]).netloc:
+    # 2) Se é Google News e não achamos parágrafos, seguir link externo real
+    if (not paragraphs) and info.get("final_url") and is_google_news(info["final_url"]):
         ext = extract_external_from_gnews(html or "", info["final_url"])
         dbg["gnews_external"] = ext
         if ext:
@@ -424,9 +446,10 @@ async def process_article(
         return None, "no_paragraphs"
 
     source_name = feed_source_name or hostname_from_url(info.get("final_url") or url)
+    final_url = info.get("final_url") or url
     item = {
-        "id": stable_id(info.get("final_url") or url),
-        "url": info.get("final_url") or url,
+        "id": stable_id(final_url),
+        "url": final_url,
         "title": (title or "")[:220],
         "image": image,
         "paragraphs": paragraphs,
@@ -451,7 +474,7 @@ async def crawl_keyword(
     # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.4"})
+                             headers={"User-Agent":"NewsAutomation/1.5"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
