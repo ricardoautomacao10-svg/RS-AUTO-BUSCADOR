@@ -1,7 +1,11 @@
 # news_automation.py
-# Google News + GDELT → segue link externo real (meta refresh, <a>, regex),
-# extração robusta (Schema.org, Readability, Trafilatura, Boilerpipe), AMP fallback,
-# modo Debug, RSS/JSON e páginas HTML.
+# Coletor de notícias:
+# - Google News + GDELT (palavra-chave)
+# - Raspar página de LISTAGEM (/crawl_site): segue links das matérias da página e extrai H1+Img+Parágrafos
+# - Extração robusta (Schema.org, Readability, Trafilatura, Boilerpipe) + fallback AMP
+# - Desenrola links do Google News para o site original
+# - Modo DEBUG por palavra-chave e por listagem
+# - RSS/JSON + páginas HTML simples
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,7 +28,7 @@ from boilerpy3 import extractors as boiler_extractors
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 APP_TITLE = "News Automation"
 
-# slugify (fallback simples)
+# slugify (fallback)
 try:
     from slugify import slugify
 except Exception:
@@ -49,14 +53,14 @@ def now_utc() -> datetime:
 def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
+def stable_id(url: str) -> str:
+    h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
+    return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
+
 def from_pubdate_struct(tm: Any) -> Optional[datetime]:
     if not tm: return None
     try: return datetime(*tm[:6], tzinfo=timezone.utc)
     except Exception: return None
-
-def stable_id(url: str) -> str:
-    h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
-    return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
 
 def hostname_from_url(url: str) -> str:
     try:
@@ -110,7 +114,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.5",
+                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.6",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -256,34 +260,21 @@ def unwrap_special_links(url: str) -> str:
     return url
 
 def extract_external_from_gnews(html: str, base_url: str) -> Optional[str]:
-    """
-    Pega o link da matéria original a partir da página do Google News.
-    Ordem: <meta http-equiv="refresh"> → <a href> externo → regex http(s) não-Google.
-    """
+    # meta refresh → <a> externo → regex http(s) não-google
     try:
         soup = BeautifulSoup(html or "", "html.parser")
-        # 1) meta refresh: content="0;url=https://site.com/..."
-        meta = soup.find("meta", attrs={"http-equiv": lambda v: v and v.lower() == "refresh"})
+        meta = soup.find("meta", attrs={"http-equiv": lambda v: v and v.lower()=="refresh"})
         if meta and meta.get("content"):
             m = re.search(r"url=(.+)", meta["content"], flags=re.I)
-            if m:
-                return urljoin(base_url, m.group(1).strip().strip('\'"'))
-
-        # 2) primeiro <a> externo de verdade
+            if m: return urljoin(base_url, m.group(1).strip().strip('\'"'))
         for a in soup.find_all("a", href=True):
             href = urljoin(base_url, a["href"])
-            u = urlparse(href); host = u.netloc.lower()
-            if not href.startswith(("http://","https://")): continue
-            if "google" in host or host.endswith(".google.com") or "gstatic.com" in host: 
-                continue
-            return href
-
-        # 3) regex geral em HTML (pega primeira URL não-Google)
-        for m in re.finditer(r'https?://[^\s\'"<>]+', html or ""):
-            href = m.group(0)
             host = urlparse(href).netloc.lower()
-            if "google" in host or "gstatic.com" in host: 
-                continue
+            if "google" in host or "gstatic.com" in host: continue
+            if href.startswith(("http://","https://")): return href
+        for m in re.finditer(r'https?://[^\s\'"<>]+', html or ""):
+            href = m.group(0); host = urlparse(href).netloc.lower()
+            if "google" in host or "gstatic.com" in host: continue
             return href
     except Exception:
         return None
@@ -362,25 +353,22 @@ def db_list_by_keyword(slug: str, since_hours: int=12) -> List[Dict[str, Any]]:
     con.close(); return out
 
 
-# ---------------------- Coleta (Google News + GDELT) ----------------------
+# ---------------------- Coleta por PALAVRA-CHAVE ----------------------
 
 def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
-    q = quote_plus(keyword)  # sem when:12h; filtro por tempo é feito aqui
+    q = quote_plus(keyword)
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={region}&ceid=BR:pt-419"
 
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.5"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.6"})
         if r.status_code != 200: return []
         js = r.json()
         arts = js.get("articles", [])
         return [a.get("url") for a in arts if a.get("url")]
     except Exception:
         return []
-
-
-# ----------------------------- Processamento -----------------------------
 
 async def process_article(
     client: httpx.AsyncClient,
@@ -462,7 +450,6 @@ async def process_article(
         return item, None, dbg
     return item, None
 
-
 async def crawl_keyword(
     client: httpx.AsyncClient, keyword: str, hours_max: int,
     require_h1: bool, require_img: bool, want_debug: bool = False
@@ -474,7 +461,7 @@ async def crawl_keyword(
     # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.5"})
+                             headers={"User-Agent":"NewsAutomation/1.6"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
@@ -489,14 +476,13 @@ async def crawl_keyword(
     except Exception:
         pass
 
-    # normalizar + deduplicar
+    # dedup
     seen = set(); norm_links: List[str] = []
     for l in links:
         if not l: continue
         if l in seen: continue
         seen.add(l); norm_links.append(l)
 
-    # processar
     now = now_utc()
     sem_links = norm_links[:120]
     tasks: List[asyncio.Task] = []
@@ -538,6 +524,108 @@ async def crawl_keyword(
     return (out, metrics, details) if want_debug else (out, metrics)
 
 
+# ---------------------- Coleta por LISTAGEM (/crawl_site) ----------------------
+
+DEFAULT_ARTICLE_REGEX = re.compile(
+    r"/(noticia|notícias|noticias|materia|post|posts|/20\d{2}/|/portal/noticias/)\b", re.I
+)
+
+def looks_like_article_url(href: str, url_regex: Optional[str]) -> bool:
+    if url_regex:
+        try:
+            return re.search(url_regex, href, flags=re.I) is not None
+        except Exception:
+            pass
+    return DEFAULT_ARTICLE_REGEX.search(href) is not None
+
+def extract_links_from_listing(html: str, base_url: str,
+                               selector: Optional[str],
+                               url_regex: Optional[str]) -> List[str]:
+    soup = BeautifulSoup(html or "", "html.parser")
+    links: List[str] = []
+
+    # 1) Seletor CSS customizado
+    if selector:
+        for el in soup.select(selector):
+            a = el if el.name == "a" else el.find("a", href=True)
+            if not a or not a.get("href"): continue
+            href = urljoin(base_url, a["href"])
+            if href.startswith(("http://","https://")): links.append(href)
+
+    # 2) Heurística padrão (todas anchors)
+    if not selector or not links:
+        for a in soup.find_all("a", href=True):
+            href = urljoin(base_url, a["href"])
+            if not href.startswith(("http://","https://")): continue
+            if looks_like_article_url(href, url_regex):
+                links.append(href)
+
+    # 3) limpar duplicatas e ignorar âncoras
+    out: List[str] = []
+    seen = set()
+    for l in links:
+        l = l.split("#")[0]
+        if l in seen: continue
+        seen.add(l)
+        out.append(l)
+    return out[:120]
+
+async def crawl_listing_once(
+    client: httpx.AsyncClient, list_url: str, keyword: str,
+    selector: Optional[str], url_regex: Optional[str],
+    require_h1: bool, require_img: bool, want_debug: bool
+):
+    html, info = await fetch_html_ex(client, list_url)
+    if not html:
+        return ([], {"fetch_fail":1}, [{"link":list_url,"fetch":info,"decision":"fetch_fail"}]) if want_debug else ([], {"fetch_fail":1})
+
+    article_links = extract_links_from_listing(html, info.get("final_url") or list_url, selector, url_regex)
+    tasks: List[asyncio.Task] = []
+    now = now_utc()
+    for url in article_links:
+        if want_debug:
+            tasks.append(asyncio.create_task(
+                process_article(client, url, keyword, now, None, None, require_h1, require_img, want_debug=True)
+            ))
+        else:
+            tasks.append(asyncio.create_task(
+                process_article(client, url, keyword, now, None, None, require_h1, require_img, want_debug=False)
+            ))
+
+    metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
+    details: List[Dict[str, Any]] = []
+    out: List[Dict[str, Any]] = []
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for res in results:
+            if want_debug:
+                if isinstance(res, tuple) and len(res) == 3:
+                    item, reason, dbg = res
+                    if item:
+                        out.append(item); db_upsert(item); metrics["ok"] += 1
+                    else:
+                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                        dbg["decision"] = reason or "fetch_fail"
+                    details.append(dbg)
+                else:
+                    metrics["fetch_fail"] += 1
+            else:
+                if isinstance(res, tuple):
+                    item, reason = res
+                    if item:
+                        out.append(item); db_upsert(item); metrics["ok"] += 1
+                    else:
+                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                else:
+                    metrics["fetch_fail"] += 1
+
+    if want_debug:
+        # incluir também uma linha da página de listagem
+        details.insert(0, {"link": list_url, "final_url": info.get("final_url"), "decision":"listing_fetched", "articles_found": len(article_links)})
+        return out, metrics, details
+    return out, metrics
+
+
 # ----------------------- App & Rotas ----------------------------
 
 def create_app() -> FastAPI:
@@ -551,6 +639,7 @@ def create_app() -> FastAPI:
     def healthz():
         return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
 
+    # ----- PALAVRA-CHAVE -----
     @app.post("/crawl")
     async def crawl(
         keywords: List[str] = Body(default=["brasil"]),
@@ -584,6 +673,34 @@ def create_app() -> FastAPI:
                 all_details[slug] = det
             return {"collected": res, "stats": stats, "details": all_details}
 
+    # ----- LISTAGEM DE SITE -----
+    @app.post("/crawl_site")
+    async def crawl_site(
+        url: str = Body(..., embed=True),
+        keyword: str = Body("geral", embed=True),
+        selector: Optional[str] = Body(default=None),
+        url_regex: Optional[str] = Body(default=None),
+        require_h1: bool = Body(default=True),
+        require_image: bool = Body(default=False),
+    ):
+        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
+            items, m = await crawl_listing_once(client, url, keyword, selector, url_regex, require_h1, require_image, want_debug=False)
+            return {"ok": True, "found": len(items), "stats": m, "keyword": slugify(keyword)}
+
+    @app.post("/crawl_site_debug")
+    async def crawl_site_debug(
+        url: str = Body(..., embed=True),
+        keyword: str = Body("geral", embed=True),
+        selector: Optional[str] = Body(default=None),
+        url_regex: Optional[str] = Body(default=None),
+        require_h1: bool = Body(default=True),
+        require_image: bool = Body(default=False),
+    ):
+        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
+            items, m, det = await crawl_listing_once(client, url, keyword, selector, url_regex, require_h1, require_image, want_debug=True)
+            return {"ok": True, "found": len(items), "stats": m, "details": det, "keyword": slugify(keyword)}
+
+    # utilitários
     @app.get("/debug_fetch")
     async def debug_fetch(url: str = Query(...)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
@@ -682,7 +799,7 @@ def create_app() -> FastAPI:
     def view_keyword(keyword_slug: str, hours: int = 12):
         rows = db_list_by_keyword(keyword_slug, since_hours=hours)
         if not rows:
-            return HTMLResponse("<h1>Nada encontrado</h1><p>Use POST /crawl ou /add.</p>", status_code=404)
+            return HTMLResponse("<h1>Nada encontrado</h1><p>Use POST /crawl, /crawl_site ou /add.</p>", status_code=404)
         parts: List[str] = []
         parts.append(
             "<!doctype html><meta charset='utf-8'>"
@@ -705,8 +822,8 @@ def create_app() -> FastAPI:
             return HTMLResponse(idx.read_text(encoding="utf-8"))
         return HTMLResponse(
             "<p>UI não encontrada. Crie <code>static/index.html</code>. "
-            "Endpoints: <code>/crawl</code>, <code>/crawl_debug</code>, <code>/debug_fetch</code>, "
-            "<code>/add</code>, <code>/api/list</code>, <code>/api/json/{slug}</code>, "
+            "Endpoints: <code>/crawl</code>, <code>/crawl_debug</code>, <code>/crawl_site</code>, <code>/crawl_site_debug</code>, "
+            "<code>/debug_fetch</code>, <code>/add</code>, <code>/api/list</code>, <code>/api/json/{slug}</code>, "
             "<code>/rss/{slug}</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
         )
 
