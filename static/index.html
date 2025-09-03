@@ -7,11 +7,11 @@
 <style>
   :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--border:#1f2630}
   *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
-  .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
+  .wrap{max-width:1160px;margin:24px auto;padding:0 16px}
   header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
   .muted{color:var(--muted)} .brand{font-weight:700}
   .grid{display:grid;grid-template-columns:1fr;gap:16px}
-  @media(min-width:980px){.grid{grid-template-columns:1.1fr .9fr}}
+  @media(min-width:1024px){.grid{grid-template-columns:1.1fr .9fr}}
   .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
   .row{display:flex;gap:10px;flex-wrap:wrap}
   input,button,select{border:1px solid var(--border);background:#0f1318;color:#e6ebf2;border-radius:10px;padding:10px 12px;font-size:15px}
@@ -35,7 +35,7 @@
   <header>
     <div>
       <div class="brand">🗞️ News Automation</div>
-      <div class="muted">Coletor por palavra-chave, link direto, ou listagem de site. Exporta em RSS/JSON.</div>
+      <div class="muted">Coletor por palavra-chave, link direto, listagem e regras por slug. Exporta RSS/JSON.</div>
     </div>
     <a class="badge" href="/healthz" target="_blank">/healthz</a>
   </header>
@@ -80,19 +80,41 @@
   </div>
 
   <div class="card" style="margin-top:16px">
-    <h3>Raspar página de <em>listagem</em> (ex.: portal/noticias/3)</h3>
+    <h3>Raspar página de <em>listagem</em></h3>
     <div class="row">
       <input id="siteUrl" placeholder="https://www.ilhabela.sp.gov.br/portal/noticias/3" style="flex:1" />
     </div>
     <div class="row" style="margin-top:8px">
-      <input id="siteKw" placeholder="Palavra-chave/slug (ex.: ilhabela)" />
+      <input id="siteKw" placeholder="Slug (ex.: ilhabela)" />
       <input id="siteSel" placeholder="Seletor CSS opcional (ex.: .lista a)" style="flex:1" />
-      <input id="siteRe" placeholder="Regex opcional de URL (ex.: /portal/noticias/\\d+)" style="flex:1" />
+      <input id="siteRe" placeholder="Regex opcional (ex.: /portal/noticias/\\d+)" style="flex:1" />
       <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="siteDbg"> Debug</label>
       <button id="btnSite" class="secondary">Raspar listagem</button>
     </div>
     <div class="status" id="statusSite"></div>
     <div id="debugBoxSite"></div>
+  </div>
+
+  <div class="card" style="margin-top:16px">
+    <h3>Regras por slug (persistentes)</h3>
+    <div class="row">
+      <input id="ruleSlug" placeholder="Slug (ex.: ilhabela)" />
+      <button id="btnLoadRule" class="secondary">Carregar</button>
+      <button id="btnClearRule" class="secondary">Limpar</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="ruleRegex" placeholder="Regex de URL das matérias (ex.: /portal/noticias/\\d+)" style="flex:1" />
+      <input id="ruleListSel" placeholder="Seletor CSS da listagem (opcional, ex.: .lista-noticias a)" style="flex:1" />
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="ruleTitleSel" placeholder="Seletor CSS do TÍTULO (opcional, ex.: h1.titulo)" style="flex:1" />
+      <input id="ruleImgSel" placeholder="Seletor CSS da IMAGEM (opcional, ex.: meta[property='og:image'])" style="flex:1" />
+      <input id="ruleParaSel" placeholder="Seletor CSS dos PARÁGRAFOS (opcional, ex.: .conteudo p)" style="flex:1" />
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="btnSaveRule">Salvar regras do slug</button>
+    </div>
+    <div class="status" id="statusRule"></div>
   </div>
 
   <div style="margin:18px 0 8px" class="muted">Resultados</div>
@@ -116,12 +138,11 @@ function card(it){
     <div class="cnt">
       <div class="title"><a href="${hrefItem}" target="_blank" rel="noopener">${title}</a></div>
       <div class="muted" style="font-size:13px">${srcName}${pub?" • "+pub:""}</div>
-      <div style="margin-top:6px"><a class="badge" href="${hrefItem}" target="_blank">Ver Limpinho</a> <a class="badge" href="${hrefItem}" target="_blank">Permalink</a></div>
+      <div style="margin-top:6px"><a class="badge" href="${hrefItem}" target="_blank">Ver Limpinho</a></div>
       <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created||"-"}</div>
     </div>
   </div>`;
 }
-
 async function apiList(keyword, hours){
   const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${hours}`);
   if(!r.ok) throw new Error("Erro ao listar"); const d = await r.json(); return d.items||[];
@@ -149,10 +170,21 @@ async function crawlSite(url, keyword, selector, urlRegex, require_h1, require_i
   });
   if(!r.ok) throw new Error(await r.text()); return r.json();
 }
+async function rulesGet(slug){
+  const r = await fetch(`/rules/get?slug=${encodeURIComponent(slug)}`);
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+async function rulesSet(data){
+  const r = await fetch("/rules/set", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(data) });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+async function rulesClear(slug){
+  const r = await fetch(`/rules/clear?slug=${encodeURIComponent(slug)}`, { method:"DELETE" });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
 
 function render(items){ $("#results").innerHTML = (items&&items.length)? items.map(card).join("") : `<div class="muted">Sem resultados para exibir.</div>`; }
 function updateExportLinks(slug){ $("#lnkRss").href=`/rss/${slug}`; $("#lnkJson").href=`/api/json/${slug}`; }
-
 function renderDebugTable(arr, boxId){
   const box = $(boxId);
   if(!arr || !arr.length){ box.innerHTML = ""; return; }
@@ -231,6 +263,41 @@ $("#btnSite").onclick = async () => {
     $("#statusSite").innerHTML = `OK. Encontrados: <b>${data.found||0}</b> • Stats — Passaram: <b>${(data.stats||{}).ok||0}</b>, Descartes: H1 <b>${(data.stats||{}).no_h1||0}</b>, Img <b>${(data.stats||{}).no_image||0}</b>, P <b>${(data.stats||{}).no_paragraphs||0}</b>, Fetch <b>${(data.stats||{}).fetch_fail||0}</b>`;
     if(data.details) renderDebugTable(data.details, "#debugBoxSite");
   }catch(e){ $("#statusSite").textContent = "Erro: "+e.message; }
+};
+
+/* Regras por slug */
+$("#btnLoadRule").onclick = async ()=>{
+  const slug = slugify($("#ruleSlug").value.trim()); if(!slug) return alert("Informe o slug");
+  $("#statusRule").textContent = "Carregando…";
+  try{
+    const r = await rulesGet(slug);
+    $("#ruleRegex").value   = r.url_regex || "";
+    $("#ruleListSel").value = r.list_selector || "";
+    $("#ruleTitleSel").value= r.title_sel || "";
+    $("#ruleImgSel").value  = r.image_sel || "";
+    $("#ruleParaSel").value = r.para_sel || "";
+    $("#statusRule").textContent = "Regras carregadas.";
+  }catch(e){ $("#statusRule").textContent = "Erro: "+e.message; }
+};
+$("#btnSaveRule").onclick = async ()=>{
+  const slug = slugify($("#ruleSlug").value.trim()); if(!slug) return alert("Informe o slug");
+  const data = {
+    slug,
+    url_regex: $("#ruleRegex").value.trim() || null,
+    list_selector: $("#ruleListSel").value.trim() || null,
+    title_sel: $("#ruleTitleSel").value.trim() || null,
+    image_sel: $("#ruleImgSel").value.trim() || null,
+    para_sel: $("#ruleParaSel").value.trim() || null,
+  };
+  $("#statusRule").textContent = "Salvando…";
+  try{ await rulesSet(data); $("#statusRule").textContent = "Regras salvas."; }
+  catch(e){ $("#statusRule").textContent = "Erro: "+e.message; }
+};
+$("#btnClearRule").onclick = async ()=>{
+  const slug = slugify($("#ruleSlug").value.trim()); if(!slug) return alert("Informe o slug");
+  if(!confirm("Apagar regras do slug?")) return;
+  try{ await rulesClear(slug); $("#statusRule").textContent = "Regras apagadas."; }
+  catch(e){ $("#statusRule").textContent = "Erro: "+e.message; }
 };
 </script>
 </body>
