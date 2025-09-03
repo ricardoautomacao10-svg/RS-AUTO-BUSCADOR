@@ -17,7 +17,7 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response, JSONResponse, PlainTextResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -404,11 +404,97 @@ async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> Li
     except Exception:
         return []
 
+async def process_article(
+    client: httpx.AsyncClient,
+    url: str, keyword: str, pub_dt: datetime,
+    feed_title: Optional[str], feed_source_name: Optional[str],
+    require_h1: bool, require_img: bool,
+    want_debug: bool = False,
+    selectors: Optional[Dict[str, Optional[str]]] = None,
+):
+    # (definição continua mais abaixo, reaproveitada em listagem)
+    ...
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# F U N Ç Ã O   Q U E   F A L T A V A
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
+
+async def crawl_keyword(
+    client: httpx.AsyncClient, keyword: str, hours_max: int,
+    require_h1: bool, require_img: bool, want_debug: bool = False
+):
+    """Coleta por palavra-chave (Google News + GDELT) e processa cada link."""
+    metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
+    details: List[Dict[str, Any]] = []
+    links: List[str] = []
+
+    # Google News
+    try:
+        r = await client.get(google_news_rss(keyword), timeout=20.0,
+                             headers={"User-Agent":"NewsAutomation/1.7"})
+        if r.status_code == 200:
+            feed = feedparser.parse(r.text)
+            for e in feed.entries[:80]:
+                link = e.get("link")
+                if link: links.append(link)
+    except Exception:
+        pass
+
+    # GDELT
+    try:
+        links += await gdelt_links(client, keyword, hours_max)
+    except Exception:
+        pass
+
+    # dedup
+    seen = set(); norm_links: List[str] = []
+    for l in links:
+        if not l: continue
+        if l in seen: continue
+        seen.add(l); norm_links.append(l)
+
+    now = now_utc()
+    tasks: List[asyncio.Task] = []
+    for link in norm_links[:120]:
+        if want_debug:
+            tasks.append(asyncio.create_task(
+                process_article(client, link, keyword, now, None, None, require_h1, require_img, want_debug=True)
+            ))
+        else:
+            tasks.append(asyncio.create_task(
+                process_article(client, link, keyword, now, None, None, require_h1, require_img, want_debug=False)
+            ))
+
+    out: List[Dict[str, Any]] = []
+    if tasks:
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for res in results:
+            if want_debug:
+                if isinstance(res, tuple) and len(res) == 3:
+                    item, reason, dbg = res
+                    if item:
+                        out.append(item); db_upsert(item); metrics["ok"] += 1
+                    else:
+                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                        dbg["decision"] = reason or "fetch_fail"
+                    details.append(dbg)
+                else:
+                    metrics["fetch_fail"] += 1
+            else:
+                if isinstance(res, tuple):
+                    item, reason = res
+                    if item:
+                        out.append(item); db_upsert(item); metrics["ok"] += 1
+                    else:
+                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                else:
+                    metrics["fetch_fail"] += 1
+
+    return (out, metrics, details) if want_debug else (out, metrics)
 
 # ---------------------- Seletores customizados ----------------------
 
 def extract_with_selectors(html: str, sels: Dict[str, Optional[str]]) -> Dict[str, Any]:
-    """Se existirem seletores customizados (title_sel, image_sel, para_sel), tenta usá-los primeiro."""
     out: Dict[str, Any] = {}
     if not any(sels.values()): return out
     soup = BeautifulSoup(html, "html.parser")
@@ -436,7 +522,7 @@ def extract_with_selectors(html: str, sels: Dict[str, Optional[str]]) -> Dict[st
     return out
 
 
-# ----------------------------- Processamento de artigo -----------------------------
+# ----------------------------- Processamento de artigo (continuação) -----------------------------
 
 async def process_article(
     client: httpx.AsyncClient,
@@ -648,6 +734,11 @@ def create_app() -> FastAPI:
     def healthz():
         return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
 
+    # evita 405 no HEAD /
+    @app.head("/")
+    def root_head():
+        return PlainTextResponse("", status_code=200)
+
     # --------- Regras por slug ----------
     @app.get("/rules/get")
     def rules_get(slug: str = Query(...)):
@@ -718,7 +809,6 @@ def create_app() -> FastAPI:
     ):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
-        # usa a regra salva se não veio pela chamada
         selector = selector or rule.get("list_selector")
         url_regex = url_regex or rule.get("url_regex")
         sels_article = {
@@ -798,104 +888,4 @@ def create_app() -> FastAPI:
 
     @app.get("/api/json/{keyword_slug}")
     def api_json(keyword_slug: str, hours: int = Query(12, ge=1, le=72)):
-        return {"items": db_list_by_keyword(keyword_slug, since_hours=hours)}
-
-    @app.get("/rss/{keyword_slug}")
-    def rss_feed(request: Request, keyword_slug: str, hours: int = Query(12, ge=1, le=72)):
-        rows = db_list_by_keyword(keyword_slug, since_hours=hours)
-        base = f"{request.url.scheme}://{request.headers.get('host','')}".rstrip("/")
-        chan_title = f"News Automation — {keyword_slug}"
-        chan_link = f"{base}/q/{keyword_slug}"
-        chan_desc = f"Itens recentes para '{keyword_slug}' (últimas {hours}h)."
-
-        parts = [
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<rss version=\"2.0\"><channel>",
-            f"<title>{escape(chan_title)}</title>",
-            f"<link>{escape(chan_link)}</link>",
-            f"<description>{escape(chan_desc)}</description>",
-        ]
-        for r in rows:
-            link = f"{base}/item/{r['id']}"
-            title = escape(r.get("title") or "(sem título)")
-            guid = r["id"]
-            pub = r.get("published_at") or r.get("created_at") or iso(now_utc())
-            img = r.get("image") or ""
-            desc_html = f'<![CDATA[{"<img src=\'%s\' /><br/>" % img if img else ""}<a href="{escape(r["url"])}">Matéria Original</a>]]>'
-            parts += [
-                "<item>",
-                f"<title>{title}</title>",
-                f"<link>{escape(link)}</link>",
-                f"<guid isPermaLink='false'>{guid}</guid>",
-                f"<pubDate>{pub}</pubDate>",
-                f"<description>{desc_html}</description>",
-                "</item>",
-            ]
-        parts.append("</channel></rss>")
-        xml = "\n".join(parts)
-        return Response(content=xml, media_type="application/rss+xml; charset=utf-8")
-
-    @app.get("/item/{id}", response_class=HTMLResponse)
-    def view_item(id: str):
-        it = db_get(id)
-        if not it:
-            return HTMLResponse("<h1>Não encontrado</h1>", status_code=404)
-        parts: List[str] = []
-        parts.append(
-            "<!doctype html><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
-            "<style>"
-            "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
-            "max-width:760px;margin:40px auto;padding:0 16px}"
-            "h1{line-height:1.25;margin:0 0 12px}"
-            "img{max-width:100%;height:auto;margin:16px 0;border-radius:6px}"
-            "p{line-height:1.7;font-size:1.06rem;margin:14px 0}"
-            "em a{color:#555;text-decoration:none}"
-            "</style>"
-        )
-        parts.append(f"<h1>{(it['title'] or 'Sem título')}</h1>")
-        if it.get("image"): parts.append(f"<img src='{it['image']}' alt='imagem'>")
-        for p in it.get("paragraphs", []): parts.append(f"<p>{p}</p>")
-        parts.append(f"<p><em>Fonte: <a href='{it['url']}' rel='nofollow noopener' target='_blank'>Matéria Original</a></em></p>")
-        return HTMLResponse("".join(parts))
-
-    @app.get("/q/{keyword_slug}", response_class=HTMLResponse)
-    def view_keyword(keyword_slug: str, hours: int = 12):
-        rows = db_list_by_keyword(keyword_slug, since_hours=hours)
-        if not rows:
-            return HTMLResponse("<h1>Nada encontrado</h1><p>Use POST /crawl, /crawl_site ou /add.</p>", status_code=404)
-        parts: List[str] = []
-        parts.append(
-            "<!doctype html><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
-            "<style>"
-            "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
-            "max-width:860px;margin:40px auto;padding:0 16px}"
-            "li{margin:10px 0}a{text-decoration:none}"
-            "</style>"
-        )
-        parts.append(f"<h1>Resultados: {keyword_slug}</h1><ul>")
-        for r in rows: parts.append(f"<li><a href='/item/{r['id']}'>{r['title']}</a> — {r['source_name']}</li>")
-        parts.append("</ul>")
-        return HTMLResponse("".join(parts))
-
-    @app.get("/", response_class=HTMLResponse)
-    def root():
-        idx = Path("static/index.html")
-        if idx.exists():
-            return HTMLResponse(idx.read_text(encoding="utf-8"))
-        return HTMLResponse(
-            "<p>UI não encontrada. Crie <code>static/index.html</code>. "
-            "Endpoints: <code>/crawl</code>, <code>/crawl_debug</code>, <code>/crawl_site</code>, <code>/crawl_site_debug</code>, "
-            "<code>/rules/get</code>, <code>/rules/set</code>, <code>/rules/clear</code>, "
-            "<code>/debug_fetch</code>, <code>/add</code>, <code>/api/list</code>, <code>/api/json/{slug}</code>, "
-            "<code>/rss/{slug}</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
-        )
-
-    return app
-
-app = create_app()
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT","8000")))
+       
