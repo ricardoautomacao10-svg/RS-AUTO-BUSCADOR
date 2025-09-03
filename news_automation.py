@@ -1,10 +1,10 @@
 # news_automation.py
-# Notícias + UI + RSS/JSON (com métricas e toggles "Exigir H1" / "Exigir imagem")
+# Notícias + UI + RSS/JSON (extrator robusto com fallback e suporte AMP)
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus, urlparse, parse_qs, unquote
+from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
 from pathlib import Path
 from html import escape
 
@@ -73,8 +73,7 @@ def clean_paragraph(p: str) -> Optional[str]:
     if not txt: return None
     low = txt.lower()
     if any(b in low for b in BAD_SNIPPETS): return None
-    if len(txt) < 25: return None
-    if re.search(r"https?://\S+", txt): return None
+    if len(txt) < 16: return None
     if re.match(r"^(?:leia|veja|saiba|assine|clique)\b", low): return None
     return txt
 
@@ -83,7 +82,7 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
     if m and m.get("content"): return m["content"].strip()
     m = soup.find("meta", attrs={"name": "twitter:image"})
     if m and m.get("content"): return m["content"].strip()
-    for img in soup.find_all("img")[:10]:
+    for img in soup.find_all("img")[:15]:
         src = (img.get("src") or "").strip()
         if not src: continue
         ls = src.lower()
@@ -94,10 +93,11 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
 async def fetch_html(client: httpx.AsyncClient, url: str) -> Optional[str]:
     try:
         r = await client.get(
-            url, timeout=20.0, follow_redirects=True,
+            url, timeout=25.0, follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                              "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 NewsAutomation/1.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36 (KHTML, like Gecko) "
+                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.1",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -110,34 +110,62 @@ async def fetch_html(client: httpx.AsyncClient, url: str) -> Optional[str]:
         return None
     return None
 
-def title_from_html(html: str) -> Optional[str]:
-    soup = BeautifulSoup(html, "html.parser")
-    h1 = soup.find("h1")
-    if h1 and h1.get_text(strip=True):
-        return h1.get_text(" ", strip=True)
-    t = soup.find("title")
-    if t and t.get_text(strip=True):
-        return t.get_text(" ", strip=True)
-    return None
+def pick_content_root(soup: BeautifulSoup) -> BeautifulSoup:
+    # Preferências comuns de corpo de matéria
+    sel = [
+        'article',
+        '[itemprop="articleBody"]',
+        '.article-body','.post-content','.entry-content','.story-content',
+        '.content__article-body','.content-article','.materia-conteudo',
+        '#article','.article__content','#content .post','.texto','section.article',
+    ]
+    for s in sel:
+        el = soup.select_one(s)
+        if el: return el
+    return soup.body or soup
 
 def paragraphs_from_html(html: str) -> List[str]:
     soup = BeautifulSoup(html, "html.parser")
-    root = soup.find("article") or soup.body or soup
+    root = pick_content_root(soup)
+
+    # 1) <p> dentro do root
     ps: List[str] = []
     for p in root.find_all("p"):
-        if p.find_parent(["script","nav","aside","footer","header","noscript","figure"]): continue
+        if p.find_parent(["script","nav","aside","footer","header","noscript","figure","style"]): continue
         c = clean_paragraph(p.get_text(" ", strip=True))
         if c: ps.append(c)
+
+    # 2) se muito pouco, pegar blocos <div> longos de texto
+    if len(ps) < 2:
+        blocks = root.find_all(["div","section","span"])
+        for b in blocks:
+            if b.find(["p","figure","script","nav","aside","footer","header","noscript"]): continue
+            txt = clean_paragraph(b.get_text(" ", strip=True))
+            if txt and len(txt) > 120:
+                ps.append(txt)
+            if len(ps) >= 8: break
+
+    # 3) fallback: trafilatura (se instalada)
     if not ps and trafilatura:
         try:
-            extracted = trafilatura.extract(html, include_comments=False, include_tables=False,
-                                           include_images=False, favor_recall=True)
+            extracted = trafilatura.extract(
+                html, include_comments=False, include_tables=False,
+                include_images=False, favor_recall=True
+            )
             if extracted:
-                parts = [clean_paragraph(t) for t in re.split(r"\n{2,}", extracted)]
-                ps = [p for p in parts if p]
+                parts = [clean_paragraph(t) for t in re.split(r"\n{1,}", extracted)]
+                ps = [p for p in parts if p][:12]
         except Exception:
             pass
-    return ps
+
+    # 4) fallback final: texto do body dividido em blocos
+    if not ps:
+        txt = soup.get_text("\n", strip=True)
+        chunks = [clean_paragraph(x) for x in re.split(r"\n{2,}", txt)]
+        ps = [c for c in chunks if c][:8]
+
+    # limitar tamanho
+    return ps[:14]
 
 def first_image_from_html(html: str) -> Optional[str]:
     return extract_og_image(BeautifulSoup(html, "html.parser"))
@@ -153,7 +181,6 @@ def unwrap_special_links(url: str) -> str:
         if "facebook.com" in host and "href=" in u.query:
             qs = parse_qs(u.query); target = qs.get("href", [None])[0]
             if target: return unquote(target)
-        # t.co: retornamos igual; httpx seguirá redirect
     except Exception:
         pass
     return url
@@ -167,10 +194,8 @@ def db_init() -> None:
         if dirpath: os.makedirs(dirpath, exist_ok=True)
     except PermissionError:
         DB_PATH = "./data/news.db"
-        try:
-            os.makedirs("./data", exist_ok=True)
-        except Exception:
-            DB_PATH = "./news.db"
+        try: os.makedirs("./data", exist_ok=True)
+        except Exception: DB_PATH = "./news.db"
 
     con = sqlite3.connect(DB_PATH)
     con.execute("""
@@ -234,7 +259,7 @@ def db_list_by_keyword(slug: str, since_hours: int=12) -> List[Dict[str, Any]]:
 # ---------------------- Coleta / Extração ----------------------
 
 def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
-    # Sem 'when:12h' para maximizar resultados; a janela é filtrada no app.
+    # Sem 'when:12h'; a janela é filtrada no app.
     q = quote_plus(keyword)
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={region}&ceid=BR:pt-419"
 
@@ -245,12 +270,29 @@ async def process_article(
     require_h1: bool, require_img: bool,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     url = unwrap_special_links(url)
-    html = await fetch_html(client, url)
-    if not html: return None, "fetch_fail"
 
-    title = title_from_html(html) or (feed_title or "")
-    image = first_image_from_html(html)
-    paragraphs = paragraphs_from_html(html)
+    # 1ª tentativa
+    html = await fetch_html(client, url)
+    title = None; image = None; paragraphs: List[str] = []
+    if html:
+        title = title_from_html(html) or (feed_title or "")
+        image = first_image_from_html(html)
+        paragraphs = paragraphs_from_html(html)
+
+    # AMP fallback
+    if (not paragraphs) and html:
+        soup = BeautifulSoup(html, "html.parser")
+        amp = soup.find("link", rel=lambda v: v and "amphtml" in v)
+        if amp and amp.get("href"):
+            amp_url = urljoin(url, amp["href"])
+            amp_html = await fetch_html(client, amp_url)
+            if amp_html:
+                if not title: title = title_from_html(amp_html) or title
+                if not image: image = first_image_from_html(amp_html) or image
+                paragraphs = paragraphs_from_html(amp_html)
+
+    if not html and not paragraphs:
+        return None, "fetch_fail"
 
     if require_h1 and (not title or not title.strip()): return None, "no_h1"
     if require_img and (not image or not str(image).strip()): return None, "no_image"
@@ -258,7 +300,7 @@ async def process_article(
 
     source_name = feed_source_name or hostname_from_url(url)
     item = {
-        "id": stable_id(url), "url": url, "title": title[:220] if title else "",
+        "id": stable_id(url), "url": url, "title": (title or "")[:220],
         "image": image, "paragraphs": paragraphs, "source_name": source_name,
         "published_at": iso(pub_dt), "keyword": slugify(keyword)
     }
@@ -271,7 +313,7 @@ async def crawl_keyword(
     metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.0"})
+                             headers={"User-Agent":"NewsAutomation/1.1"})
         if r.status_code != 200: return [], metrics
         feed = feedparser.parse(r.text)
     except Exception:
@@ -280,7 +322,7 @@ async def crawl_keyword(
 
     now = now_utc(); cutoff = now - timedelta(hours=hours_max)
     tasks: List[asyncio.Task] = []
-    for entry in feed.entries[:40]:
+    for entry in feed.entries[:50]:
         link = entry.get("link")
         if not link: continue
         pub = from_pubdate_struct(entry.get("published_parsed")) or now
@@ -465,4 +507,3 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT","8000")))
-
