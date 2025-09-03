@@ -7,16 +7,18 @@
 <style>
   :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--border:#1f2630}
   *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
-  .wrap{max-width:1040px;margin:24px auto;padding:0 16px}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
   header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
   .muted{color:var(--muted)} .brand{font-weight:700}
-  .grid{display:grid;grid-template-columns:1fr;gap:16px}@media(min-width:880px){.grid{grid-template-columns:1.2fr .8fr}}
+  .grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:980px){.grid{grid-template-columns:1.1fr .9fr}}
   .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
   .row{display:flex;gap:10px;flex-wrap:wrap}
   input,button,select{border:1px solid var(--border);background:#0f1318;color:#e6ebf2;border-radius:10px;padding:10px 12px;font-size:15px}
   button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
   button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
-  .results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}@media(min-width:720px){.results{grid-template-columns:1fr 1fr}}
+  .results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}
+  @media(min-width:720px){.results{grid-template-columns:1fr 1fr}}
   .news{background:#0f1318;border:1px solid var(--border);border-radius:12px;overflow:hidden}
   .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
   .news img{width:100%;height:100%;object-fit:cover}.cnt{padding:12px 12px 14px}
@@ -31,7 +33,10 @@
 <body>
 <div class="wrap">
   <header>
-    <div><div class="brand">🗞️ News Automation</div><div class="muted">Coletor por palavra-chave ou link. Exporte em RSS/JSON.</div></div>
+    <div>
+      <div class="brand">🗞️ News Automation</div>
+      <div class="muted">Coletor por palavra-chave, link direto, ou listagem de site. Exporta em RSS/JSON.</div>
+    </div>
     <a class="badge" href="/healthz" target="_blank">/healthz</a>
   </header>
 
@@ -74,6 +79,22 @@
     </div>
   </div>
 
+  <div class="card" style="margin-top:16px">
+    <h3>Raspar página de <em>listagem</em> (ex.: portal/noticias/3)</h3>
+    <div class="row">
+      <input id="siteUrl" placeholder="https://www.ilhabela.sp.gov.br/portal/noticias/3" style="flex:1" />
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="siteKw" placeholder="Palavra-chave/slug (ex.: ilhabela)" />
+      <input id="siteSel" placeholder="Seletor CSS opcional (ex.: .lista a)" style="flex:1" />
+      <input id="siteRe" placeholder="Regex opcional de URL (ex.: /portal/noticias/\\d+)" style="flex:1" />
+      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="siteDbg"> Debug</label>
+      <button id="btnSite" class="secondary">Raspar listagem</button>
+    </div>
+    <div class="status" id="statusSite"></div>
+    <div id="debugBoxSite"></div>
+  </div>
+
   <div style="margin:18px 0 8px" class="muted">Resultados</div>
   <div class="results" id="results"></div>
 </div>
@@ -95,7 +116,7 @@ function card(it){
     <div class="cnt">
       <div class="title"><a href="${hrefItem}" target="_blank" rel="noopener">${title}</a></div>
       <div class="muted" style="font-size:13px">${srcName}${pub?" • "+pub:""}</div>
-      <div style="margin-top:6px"><a class="badge" href="${hrefItem}" target="_blank">Ver Limpinho</a> <a class="badge" href="${it.url}" target="_blank">Matéria Original</a></div>
+      <div style="margin-top:6px"><a class="badge" href="${hrefItem}" target="_blank">Ver Limpinho</a> <a class="badge" href="${hrefItem}" target="_blank">Permalink</a></div>
       <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created||"-"}</div>
     </div>
   </div>`;
@@ -120,31 +141,40 @@ async function addLink(url, keyword, require_h1, require_image){
   });
   if(!r.ok) throw new Error(await r.text()); return r.json();
 }
+async function crawlSite(url, keyword, selector, urlRegex, require_h1, require_image, debug){
+  const ep = debug ? "/crawl_site_debug" : "/crawl_site";
+  const r = await fetch(ep, {
+    method:"POST", headers:{ "Content-Type":"application/json" },
+    body: JSON.stringify({ url, keyword, selector, url_regex: urlRegex, require_h1, require_image })
+  });
+  if(!r.ok) throw new Error(await r.text()); return r.json();
+}
+
 function render(items){ $("#results").innerHTML = (items&&items.length)? items.map(card).join("") : `<div class="muted">Sem resultados para exibir.</div>`; }
 function updateExportLinks(slug){ $("#lnkRss").href=`/rss/${slug}`; $("#lnkJson").href=`/api/json/${slug}`; }
 
-function renderDebugTable(arr){
-  if(!arr || !arr.length){ $("#debugBox").innerHTML = ""; return; }
+function renderDebugTable(arr, boxId){
+  const box = $(boxId);
+  if(!arr || !arr.length){ box.innerHTML = ""; return; }
   let rows = arr.map(d=>{
     const f = d.fetch||{};
     const st = d.decision==="ok" ? `<span class="ok">OK</span>` : `<span class="fail">${d.decision||"?"}</span>`;
-    const h1 = d.title_found?"sim":"não";
-    const img = d.image_found?"sim":"não";
-    const p = d.p_count||0;
-    const http = `${f.status||"-"} ${f.ctype||""}`;
+    const h1 = d.title_found!==undefined ? (d.title_found?"sim":"não") : "-";
+    const img = d.image_found!==undefined ? (d.image_found?"sim":"não") : "-";
+    const p = d.p_count!==undefined ? (d.p_count||0) : "-";
+    const http = f.status? `${f.status} ${f.ctype||""}` : "-";
     const url = (f.final_url||d.link||"");
     return `<tr>
       <td>${st}</td><td>${http}</td><td>${h1}</td><td>${img}</td><td>${p}</td>
       <td style="max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        <a href="${url}" target="_blank" rel="noopener">${url}</a>
+        ${url?`<a href="${url}" target="_blank" rel="noopener">${url}</a>`:""}
       </td>
     </tr>`;
   }).join("");
-  $("#debugBox").innerHTML = `
-    <table>
-      <thead><tr><th>Status</th><th>HTTP/Tipo</th><th>H1</th><th>Img</th><th>P</th><th>URL final</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>`;
+  box.innerHTML = `<table>
+    <thead><tr><th>Status</th><th>HTTP/Tipo</th><th>H1</th><th>Img</th><th>P</th><th>URL final</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
 }
 
 $("#btnCrawl").onclick = async () => {
@@ -161,7 +191,7 @@ $("#btnCrawl").onclick = async () => {
     render(items);
     $("#status").innerHTML = `OK. Mostrando: <b>${firstSlug}</b> (janela ${hours}h). `+
       `Passaram: <b>${stats.ok||0}</b> • Descartes — H1: <b>${stats.no_h1||0}</b>, Img: <b>${stats.no_image||0}</b>, P: <b>${stats.no_paragraphs||0}</b>, Fetch: <b>${stats.fetch_fail||0}</b>`;
-    if(data.details && data.details[firstSlug]) renderDebugTable(data.details[firstSlug]);
+    if(data.details && data.details[firstSlug]) renderDebugTable(data.details[firstSlug], "#debugBox");
   }catch(e){ $("#status").textContent = "Erro: "+e.message; }
 };
 
@@ -184,6 +214,23 @@ $("#btnAdd").onclick = async () => {
     render(items); $("#kwLive").value = slug; updateExportLinks(slug);
     $("#statusAdd").textContent = "Link adicionado.";
   }catch(e){ $("#statusAdd").textContent = "Erro: "+e.message; }
+};
+
+$("#btnSite").onclick = async () => {
+  const url = $("#siteUrl").value.trim(); if(!url) return alert("Cole a URL da listagem");
+  const kw = ($("#siteKw").value.trim()) || "geral";
+  const selector = $("#siteSel").value.trim() || null;
+  const urlRegex = $("#siteRe").value.trim() || null;
+  const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked; const debug=$("#siteDbg").checked;
+  $("#statusSite").textContent = "Raspando listagem…"; $("#debugBoxSite").innerHTML = "";
+  try{
+    const data = await crawlSite(url, kw, selector, urlRegex, reqH1, reqImg, debug);
+    const slug = slugify(kw); const hours = Number($("#hours").value||12);
+    const items = await apiList(slug, hours);
+    render(items); $("#kwLive").value = slug; updateExportLinks(slug);
+    $("#statusSite").innerHTML = `OK. Encontrados: <b>${data.found||0}</b> • Stats — Passaram: <b>${(data.stats||{}).ok||0}</b>, Descartes: H1 <b>${(data.stats||{}).no_h1||0}</b>, Img <b>${(data.stats||{}).no_image||0}</b>, P <b>${(data.stats||{}).no_paragraphs||0}</b>, Fetch <b>${(data.stats||{}).fetch_fail||0}</b>`;
+    if(data.details) renderDebugTable(data.details, "#debugBoxSite");
+  }catch(e){ $("#statusSite").textContent = "Erro: "+e.message; }
 };
 </script>
 </body>
