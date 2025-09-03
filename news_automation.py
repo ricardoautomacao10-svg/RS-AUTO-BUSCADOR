@@ -1,5 +1,6 @@
 # news_automation.py
-# Notícias + UI + RSS/JSON (extrator robusto com fallback e suporte AMP)
+# Notícias + UI + RSS/JSON
+# Agora com MODO DEBUG: /crawl_debug e /debug_fetch
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -12,7 +13,7 @@ import feedparser
 import httpx
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -29,7 +30,7 @@ except Exception:
         s = re.sub(r"[^a-z0-9\-]+", "", s)
         return s
 
-# trafilatura opcional
+# trafilatura opcional (fallback de extração)
 try:
     import trafilatura  # type: ignore
 except Exception:
@@ -60,12 +61,11 @@ def hostname_from_url(url: str) -> str:
         return "fonte"
 
 BAD_SNIPPETS = [
-    "leia mais","leia também","saiba mais","veja também","veja mais",
-    "continue lendo","continue a ler","clique aqui","acesse aqui",
-    "inscreva-se","assine","assinar","newsletter",
-    "compartilhe","siga-nos","siga no instagram","siga no twitter","siga no x","siga no facebook",
-    "acompanhe nas redes","publicidade","anúncio","publieditorial","conteúdo patrocinado","oferta",
-    "voltar ao topo","voltar para o início","cookies","aceitar cookies",
+    "leia mais","leia também","saiba mais","veja também","veja mais","continue lendo","continue a ler",
+    "clique aqui","acesse aqui","inscreva-se","assine","assinar","newsletter","compartilhe","siga-nos",
+    "siga no instagram","siga no twitter","siga no x","siga no facebook","acompanhe nas redes",
+    "publicidade","anúncio","publieditorial","conteúdo patrocinado","oferta","voltar ao topo","voltar para o início",
+    "cookies","aceitar cookies",
 ]
 
 def clean_paragraph(p: str) -> Optional[str]:
@@ -90,34 +90,38 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
         return src
     return None
 
-async def fetch_html(client: httpx.AsyncClient, url: str) -> Optional[str]:
+async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[str], Dict[str, Any]]:
+    """Faz GET e devolve (html ou None, info_debug)."""
+    info = {"request_url": url, "ok": False, "status": None, "ctype": "", "final_url": url, "error": None}
     try:
         r = await client.get(
             url, timeout=25.0, follow_redirects=True,
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.1",
+                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.2",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
             },
         )
-        ctype = r.headers.get("Content-Type","")
-        if 200 <= r.status_code < 300 and ("text/html" in ctype or "application/xhtml" in ctype):
-            return r.text
-    except Exception:
-        return None
-    return None
+        info["status"] = r.status_code
+        info["ctype"] = r.headers.get("Content-Type","")
+        info["final_url"] = str(r.url)
+        if 200 <= r.status_code < 300 and (
+            "text/html" in info["ctype"] or "application/xhtml" in info["ctype"] or info["ctype"].startswith("text/")
+        ):
+            info["ok"] = True
+            return r.text, info
+    except Exception as e:
+        info["error"] = str(e)[:300]
+    return None, info
 
 def pick_content_root(soup: BeautifulSoup) -> BeautifulSoup:
-    # Preferências comuns de corpo de matéria
     sel = [
-        'article',
-        '[itemprop="articleBody"]',
-        '.article-body','.post-content','.entry-content','.story-content',
-        '.content__article-body','.content-article','.materia-conteudo',
-        '#article','.article__content','#content .post','.texto','section.article',
+        'article','[itemprop="articleBody"]','.article-body','.post-content','.entry-content','.story-content',
+        '.content__article-body','.content-article','.materia-conteudo','#article','.article__content',
+        '#content .post','.texto','section.article',
     ]
     for s in sel:
         el = soup.select_one(s)
@@ -127,15 +131,11 @@ def pick_content_root(soup: BeautifulSoup) -> BeautifulSoup:
 def paragraphs_from_html(html: str) -> List[str]:
     soup = BeautifulSoup(html, "html.parser")
     root = pick_content_root(soup)
-
-    # 1) <p> dentro do root
     ps: List[str] = []
     for p in root.find_all("p"):
         if p.find_parent(["script","nav","aside","footer","header","noscript","figure","style"]): continue
         c = clean_paragraph(p.get_text(" ", strip=True))
         if c: ps.append(c)
-
-    # 2) se muito pouco, pegar blocos <div> longos de texto
     if len(ps) < 2:
         blocks = root.find_all(["div","section","span"])
         for b in blocks:
@@ -144,37 +144,35 @@ def paragraphs_from_html(html: str) -> List[str]:
             if txt and len(txt) > 120:
                 ps.append(txt)
             if len(ps) >= 8: break
-
-    # 3) fallback: trafilatura (se instalada)
     if not ps and trafilatura:
         try:
-            extracted = trafilatura.extract(
-                html, include_comments=False, include_tables=False,
-                include_images=False, favor_recall=True
-            )
+            extracted = trafilatura.extract(html, include_comments=False, include_tables=False,
+                                           include_images=False, favor_recall=True)
             if extracted:
                 parts = [clean_paragraph(t) for t in re.split(r"\n{1,}", extracted)]
                 ps = [p for p in parts if p][:12]
         except Exception:
             pass
-
-    # 4) fallback final: texto do body dividido em blocos
     if not ps:
         txt = soup.get_text("\n", strip=True)
         chunks = [clean_paragraph(x) for x in re.split(r"\n{2,}", txt)]
         ps = [c for c in chunks if c][:8]
-
-    # limitar tamanho
     return ps[:14]
+
+def title_from_html(html: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    h1 = soup.find("h1")
+    if h1 and h1.get_text(strip=True): return h1.get_text(" ", strip=True)
+    t = soup.find("title")
+    if t and t.get_text(strip=True): return t.get_text(" ", strip=True)
+    return None
 
 def first_image_from_html(html: str) -> Optional[str]:
     return extract_og_image(BeautifulSoup(html, "html.parser"))
 
 def unwrap_special_links(url: str) -> str:
-    """Expande wrappers do FB e t.co (o httpx segue redirects)."""
     try:
-        u = urlparse(url)
-        host = u.netloc.lower()
+        u = urlparse(url); host = u.netloc.lower()
         if "l.facebook.com" in host and u.path.startswith("/l.php"):
             qs = parse_qs(u.query); target = qs.get("u", [None])[0]
             if target: return unquote(target)
@@ -259,8 +257,7 @@ def db_list_by_keyword(slug: str, since_hours: int=12) -> List[Dict[str, Any]]:
 # ---------------------- Coleta / Extração ----------------------
 
 def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
-    # Sem 'when:12h'; a janela é filtrada no app.
-    q = quote_plus(keyword)
+    q = quote_plus(keyword)  # sem when:12h
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={region}&ceid=BR:pt-419"
 
 async def process_article(
@@ -268,11 +265,14 @@ async def process_article(
     url: str, keyword: str, pub_dt: datetime,
     feed_title: Optional[str], feed_source_name: Optional[str],
     require_h1: bool, require_img: bool,
-) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    url = unwrap_special_links(url)
+    want_debug: bool = False,
+):
+    dbg: Dict[str, Any] = {"link": url, "amp_used": False}
 
-    # 1ª tentativa
-    html = await fetch_html(client, url)
+    url = unwrap_special_links(url)
+    html, info = await fetch_html_ex(client, url)
+    dbg["fetch"] = info
+
     title = None; image = None; paragraphs: List[str] = []
     if html:
         title = title_from_html(html) or (feed_title or "")
@@ -280,23 +280,32 @@ async def process_article(
         paragraphs = paragraphs_from_html(html)
 
     # AMP fallback
-    if (not paragraphs) and html:
+    if not paragraphs and html:
         soup = BeautifulSoup(html, "html.parser")
         amp = soup.find("link", rel=lambda v: v and "amphtml" in v)
         if amp and amp.get("href"):
             amp_url = urljoin(url, amp["href"])
-            amp_html = await fetch_html(client, amp_url)
+            amp_html, amp_info = await fetch_html_ex(client, amp_url)
+            dbg["amp_used"] = True
+            dbg["amp_fetch"] = amp_info
             if amp_html:
                 if not title: title = title_from_html(amp_html) or title
                 if not image: image = first_image_from_html(amp_html) or image
                 paragraphs = paragraphs_from_html(amp_html)
 
-    if not html and not paragraphs:
-        return None, "fetch_fail"
+    dbg["title_found"] = bool(title and title.strip())
+    dbg["image_found"] = bool(image)
+    dbg["p_count"] = len(paragraphs)
 
-    if require_h1 and (not title or not title.strip()): return None, "no_h1"
-    if require_img and (not image or not str(image).strip()): return None, "no_image"
-    if not paragraphs: return None, "no_paragraphs"
+    if require_h1 and not dbg["title_found"]:
+        if want_debug: return None, "no_h1", dbg
+        return None, "no_h1"
+    if require_img and not dbg["image_found"]:
+        if want_debug: return None, "no_image", dbg
+        return None, "no_image"
+    if not paragraphs:
+        if want_debug: return None, "no_paragraphs", dbg
+        return None, "no_paragraphs"
 
     source_name = feed_source_name or hostname_from_url(url)
     item = {
@@ -304,25 +313,32 @@ async def process_article(
         "image": image, "paragraphs": paragraphs, "source_name": source_name,
         "published_at": iso(pub_dt), "keyword": slugify(keyword)
     }
+    if want_debug:
+        dbg["decision"] = "ok"
+        return item, None, dbg
     return item, None
 
 async def crawl_keyword(
     client: httpx.AsyncClient, keyword: str, hours_max: int,
-    require_h1: bool, require_img: bool
-) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+    require_h1: bool, require_img: bool, want_debug: bool = False
+):
     metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
+    details: List[Dict[str, Any]] = []
+
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.1"})
-        if r.status_code != 200: return [], metrics
+                             headers={"User-Agent":"NewsAutomation/1.2"})
+        if r.status_code != 200:
+            return ([], metrics, details) if want_debug else ([], metrics)
         feed = feedparser.parse(r.text)
     except Exception:
         metrics["fetch_fail"] += 1
-        return [], metrics
+        return ([], metrics, details) if want_debug else ([], metrics)
 
     now = now_utc(); cutoff = now - timedelta(hours=hours_max)
     tasks: List[asyncio.Task] = []
-    for entry in feed.entries[:50]:
+
+    for entry in feed.entries[:60]:
         link = entry.get("link")
         if not link: continue
         pub = from_pubdate_struct(entry.get("published_parsed")) or now
@@ -333,23 +349,43 @@ async def crawl_keyword(
             src = getattr(src_obj, "title", None) or (src_obj.get("title") if isinstance(src_obj, dict) else None)
         except Exception:
             src = None
-        tasks.append(asyncio.create_task(
-            process_article(client, link, keyword, pub, entry.get("title"), src, require_h1, require_img)
-        ))
+        if want_debug:
+            tasks.append(asyncio.create_task(
+                process_article(client, link, keyword, pub, entry.get("title"), src,
+                                require_h1, require_img, want_debug=True)
+            ))
+        else:
+            tasks.append(asyncio.create_task(
+                process_article(client, link, keyword, pub, entry.get("title"), src,
+                                require_h1, require_img, want_debug=False)
+            ))
 
     out: List[Dict[str, Any]] = []
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for res in results:
-            if isinstance(res, tuple):
-                item, reason = res
-                if item:
-                    out.append(item); db_upsert(item); metrics["ok"] += 1
+            if want_debug:
+                if isinstance(res, tuple) and len(res) == 3:
+                    item, reason, dbg = res
+                    if item:
+                        out.append(item); db_upsert(item); metrics["ok"] += 1
+                    else:
+                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                        dbg["decision"] = reason or "fetch_fail"
+                    details.append(dbg)
                 else:
-                    metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                    metrics["fetch_fail"] += 1
             else:
-                metrics["fetch_fail"] += 1
-    return out, metrics
+                if isinstance(res, tuple):
+                    item, reason = res
+                    if item:
+                        out.append(item); db_upsert(item); metrics["ok"] += 1
+                    else:
+                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                else:
+                    metrics["fetch_fail"] += 1
+
+    return (out, metrics, details) if want_debug else (out, metrics)
 
 # ----------------------- App & Rotas ----------------------------
 
@@ -358,7 +394,6 @@ def create_app() -> FastAPI:
     app = FastAPI(title=APP_TITLE)
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
-
     app.mount("/static", StaticFiles(directory="static", html=True, check_dir=False), name="static")
 
     @app.get("/healthz")
@@ -370,15 +405,42 @@ def create_app() -> FastAPI:
         keywords: List[str] = Body(default=["brasil"]),
         hours_max: int = Body(default=12),
         require_h1: bool = Body(default=True),
-        require_image: bool = Body(default=False),  # imagem desativada por padrão
+        require_image: bool = Body(default=False),
     ):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}
             for kw in keywords:
-                items, m = await crawl_keyword(client, kw, hours_max, require_h1, require_image)
+                items, m = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=False)
                 res[slugify(kw)] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in items]
                 stats[slugify(kw)] = m
             return {"collected": res, "stats": stats}
+
+    # NOVO: modo debug
+    @app.post("/crawl_debug")
+    async def crawl_debug(
+        keywords: List[str] = Body(default=["brasil"]),
+        hours_max: int = Body(default=12),
+        require_h1: bool = Body(default=True),
+        require_image: bool = Body(default=False),
+    ):
+        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
+            all_details: Dict[str, Any] = {}
+            res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}
+            for kw in keywords:
+                items, m, det = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=True)
+                slug = slugify(kw)
+                res[slug] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in items]
+                stats[slug] = m
+                all_details[slug] = det
+            return {"collected": res, "stats": stats, "details": all_details}
+
+    # NOVO: teste de fetch isolado
+    @app.get("/debug_fetch")
+    async def debug_fetch(url: str = Query(...)):
+        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
+            html, info = await fetch_html_ex(client, url)
+            sample = (html or "")[:400]
+            return JSONResponse({"info": info, "snippet": sample})
 
     @app.post("/add")
     async def add_link(
@@ -388,8 +450,12 @@ def create_app() -> FastAPI:
         require_image: bool = Body(default=False),
     ):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-            item, reason = await process_article(client, url, keyword, now_utc(), None, None,
-                                                 require_h1=require_h1, require_img=require_image)
+            res = await process_article(client, url, keyword, now_utc(), None, None,
+                                        require_h1=require_h1, require_img=require_image, want_debug=False)
+            if isinstance(res, tuple):
+                item, reason = res
+            else:
+                item, reason = None, "fetch_fail"
             if not item:
                 raise HTTPException(status_code=400, detail=f"Não foi possível extrair conteúdo ({reason}).")
             db_upsert(item)
@@ -495,9 +561,9 @@ def create_app() -> FastAPI:
             return HTMLResponse(idx.read_text(encoding="utf-8"))
         return HTMLResponse(
             "<p>UI não encontrada. Crie <code>static/index.html</code>. "
-            "Endpoints: <code>/crawl</code>, <code>/add</code>, <code>/api/list</code>, "
-            "<code>/api/json/{slug}</code>, <code>/rss/{slug}</code>, <code>/item/{id}</code>, "
-            "<code>/q/{slug}</code>, <code>/healthz</code>.</p>"
+            "Endpoints: <code>/crawl</code>, <code>/crawl_debug</code>, <code>/debug_fetch</code>, "
+            "<code>/add</code>, <code>/api/list</code>, <code>/api/json/{slug}</code>, "
+            "<code>/rss/{slug}</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
         )
 
     return app
