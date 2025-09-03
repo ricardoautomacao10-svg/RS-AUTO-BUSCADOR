@@ -1,6 +1,6 @@
 # news_automation.py
-# Coletor de notícias: Google News + GDELT, extração robusta (Schema.org, Readability, Trafilatura, fallback),
-# AMP, debug detalhado, RSS/JSON, UI em /static.
+# Coletor de notícias: Google News + GDELT, extração robusta (Schema.org, Readability, Trafilatura, Boilerpipe),
+# AMP, "seguir link externo" do Google News, debug detalhado, RSS/JSON, UI em /static.
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,14 +17,13 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-# extração
 from readability import Document as ReadabilityDoc
 from boilerpy3 import extractors as boiler_extractors
 
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 APP_TITLE = "News Automation"
 
-# slugify (fallback simples)
+# slugify (fallback)
 try:
     from slugify import slugify
 except Exception:
@@ -49,14 +48,14 @@ def now_utc() -> datetime:
 def iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat()
 
+def stable_id(url: str) -> str:
+    h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
+    return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
+
 def from_pubdate_struct(tm: Any) -> Optional[datetime]:
     if not tm: return None
     try: return datetime(*tm[:6], tzinfo=timezone.utc)
     except Exception: return None
-
-def stable_id(url: str) -> str:
-    h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
-    return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
 
 def hostname_from_url(url: str) -> str:
     try:
@@ -96,6 +95,7 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[str], Dict[str, Any]]:
+    """GET com debug info."""
     info = {"request_url": url, "ok": False, "status": None, "ctype": "", "final_url": url, "error": None}
     try:
         r = await client.get(
@@ -103,7 +103,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.3",
+                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.4",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -174,14 +174,12 @@ def paragraphs_from_html(html: str) -> List[str]:
         if c: ps.append(c)
 
     if len(ps) < 2:
-        # tentar listas longas
         for ul in root.find_all(["ul","ol"]):
             txt = clean_paragraph(ul.get_text(" ", strip=True))
             if txt and len(txt) > 120: ps.append(txt)
             if len(ps) >= 8: break
 
     if len(ps) < 2:
-        # Readability
         try:
             doc = ReadabilityDoc(html)
             content_html = doc.summary()
@@ -203,7 +201,6 @@ def paragraphs_from_html(html: str) -> List[str]:
             pass
 
     if len(ps) < 2:
-        # Boilerpipe (artigos densos)
         try:
             extractor = boiler_extractors.ArticleExtractor()
             text = extractor.get_content(html)
@@ -219,10 +216,9 @@ def paragraphs_from_html(html: str) -> List[str]:
     return ps[:14]
 
 def title_from_html(html: str) -> Optional[str]:
-    soup = BeautifulSoup(html, "html.parser")
-    # Schema.org headline
     sc = parse_schema_org(html).get("headline")
     if sc: return sc
+    soup = BeautifulSoup(html, "html.parser")
     h1 = soup.find("h1")
     if h1 and h1.get_text(strip=True): return h1.get_text(" ", strip=True)
     m = soup.find("meta", property="og:title")
@@ -235,7 +231,6 @@ def image_from_html(html: str) -> Optional[str]:
     sc = parse_schema_org(html).get("image")
     if sc: return sc
     return extract_og_image(BeautifulSoup(html, "html.parser"))
-
 
 def first_image_from_html(html: str) -> Optional[str]:
     return image_from_html(html)
@@ -252,6 +247,25 @@ def unwrap_special_links(url: str) -> str:
     except Exception:
         pass
     return url
+
+def extract_external_from_gnews(html: str, base_url: str) -> Optional[str]:
+    """
+    Nas páginas https://news.google.com/articles/... o conteúdo é mínimo.
+    Pegamos o primeiro <a href> externo (não google) e seguimos nele.
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for a in soup.find_all("a", href=True):
+            href = urljoin(base_url, a["href"])
+            u = urlparse(href)
+            host = u.netloc.lower()
+            if not href.startswith(("http://","https://")): continue
+            if "news.google." in host or host.endswith(".google.com") or host.endswith(".gstatic.com"): 
+                continue
+            return href
+    except Exception:
+        return None
+    return None
 
 
 # ----------------------------- DB -----------------------------
@@ -335,13 +349,16 @@ def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.3"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.4"})
         if r.status_code != 200: return []
         js = r.json()
         arts = js.get("articles", [])
         return [a.get("url") for a in arts if a.get("url")]
     except Exception:
         return []
+
+
+# ----------------------------- Processamento -----------------------------
 
 async def process_article(
     client: httpx.AsyncClient,
@@ -357,27 +374,34 @@ async def process_article(
     dbg["fetch"] = info
     title = None; image = None; paragraphs: List[str] = []
 
+    # 1) Primeira tentativa no link recebido
     if html:
         title = title_from_html(html) or (feed_title or "")
         image = first_image_from_html(html)
-        if not image:
-            # tentar <meta> no HTML bruto antes de parse completo
-            pass
-        # schema.org body curto
         sc = parse_schema_org(html)
-        if sc.get("paragraphs"):
-            paragraphs = sc["paragraphs"]
-            if not title and sc.get("headline"): title = sc["headline"]
-            if not image and sc.get("image"): image = sc["image"]
-        if not paragraphs:
-            paragraphs = paragraphs_from_html(html)
+        if sc.get("paragraphs"): paragraphs = sc["paragraphs"]
+        if not paragraphs: paragraphs = paragraphs_from_html(html)
 
-    # AMP fallback
-    if not paragraphs and html:
+    # 2) Se é página do Google News e não achamos parágrafos, seguir link externo real
+    if (not paragraphs) and info.get("final_url") and "news.google.com" in urlparse(info["final_url"]).netloc:
+        ext = extract_external_from_gnews(html or "", info["final_url"])
+        dbg["gnews_external"] = ext
+        if ext:
+            html2, info2 = await fetch_html_ex(client, ext)
+            dbg["gnews_follow_fetch"] = info2
+            if html2:
+                if not title: title = title_from_html(html2) or title
+                if not image: image = first_image_from_html(html2) or image
+                sc2 = parse_schema_org(html2)
+                if sc2.get("paragraphs"): paragraphs = sc2["paragraphs"]
+                if not paragraphs: paragraphs = paragraphs_from_html(html2)
+
+    # 3) AMP fallback
+    if (not paragraphs) and (html or ""):
         soup = BeautifulSoup(html, "html.parser")
         amp = soup.find("link", rel=lambda v: v and "amphtml" in v)
         if amp and amp.get("href"):
-            amp_url = urljoin(url, amp["href"])
+            amp_url = urljoin(info.get("final_url") or url, amp["href"])
             amp_html, amp_info = await fetch_html_ex(client, amp_url)
             dbg["amp_used"] = True; dbg["amp_fetch"] = amp_info
             if amp_html:
@@ -399,16 +423,22 @@ async def process_article(
         if want_debug: return None, "no_paragraphs", dbg
         return None, "no_paragraphs"
 
-    source_name = feed_source_name or hostname_from_url(url)
+    source_name = feed_source_name or hostname_from_url(info.get("final_url") or url)
     item = {
-        "id": stable_id(url), "url": url, "title": (title or "")[:220],
-        "image": image, "paragraphs": paragraphs, "source_name": source_name,
-        "published_at": iso(pub_dt), "keyword": slugify(keyword)
+        "id": stable_id(info.get("final_url") or url),
+        "url": info.get("final_url") or url,
+        "title": (title or "")[:220],
+        "image": image,
+        "paragraphs": paragraphs,
+        "source_name": source_name,
+        "published_at": iso(pub_dt),
+        "keyword": slugify(keyword)
     }
     if want_debug:
         dbg["decision"] = "ok"
         return item, None, dbg
     return item, None
+
 
 async def crawl_keyword(
     client: httpx.AsyncClient, keyword: str, hours_max: int,
@@ -421,7 +451,7 @@ async def crawl_keyword(
     # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.3"})
+                             headers={"User-Agent":"NewsAutomation/1.4"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
@@ -437,18 +467,15 @@ async def crawl_keyword(
         pass
 
     # normalizar + deduplicar
-    seen = set()
-    norm_links: List[str] = []
+    seen = set(); norm_links: List[str] = []
     for l in links:
         if not l: continue
         if l in seen: continue
-        seen.add(l)
-        norm_links.append(l)
+        seen.add(l); norm_links.append(l)
 
-    # limitar e processar
+    # processar
     now = now_utc()
-    sem = min(120, len(norm_links))
-    sem_links = norm_links[:sem]
+    sem_links = norm_links[:120]
     tasks: List[asyncio.Task] = []
     for link in sem_links:
         if want_debug:
