@@ -1,6 +1,6 @@
 # news_automation.py
-# Notícias + UI + RSS/JSON
-# Agora com MODO DEBUG: /crawl_debug e /debug_fetch
+# Coletor de notícias: Google News + GDELT, extração robusta (Schema.org, Readability, Trafilatura, fallback),
+# AMP, debug detalhado, RSS/JSON, UI em /static.
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,6 +17,10 @@ from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
+# extração
+from readability import Document as ReadabilityDoc
+from boilerpy3 import extractors as boiler_extractors
+
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 APP_TITLE = "News Automation"
 
@@ -30,11 +34,12 @@ except Exception:
         s = re.sub(r"[^a-z0-9\-]+", "", s)
         return s
 
-# trafilatura opcional (fallback de extração)
+# trafilatura opcional
 try:
     import trafilatura  # type: ignore
 except Exception:
     trafilatura = None
+
 
 # ----------------------------- Utils -----------------------------
 
@@ -91,7 +96,6 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
     return None
 
 async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[str], Dict[str, Any]]:
-    """Faz GET e devolve (html ou None, info_debug)."""
     info = {"request_url": url, "ok": False, "status": None, "ctype": "", "final_url": url, "error": None}
     try:
         r = await client.get(
@@ -99,7 +103,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
             headers={
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                               "AppleWebKit/537.36 (KHTML, like Gecko) "
-                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.2",
+                              "Chrome/124.0 Safari/537.36 NewsAutomation/1.3",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -116,6 +120,38 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
     except Exception as e:
         info["error"] = str(e)[:300]
     return None, info
+
+
+# ----------------------------- Extração -----------------------------
+
+def parse_schema_org(html: str) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(tag.string or "{}")
+            except Exception:
+                continue
+            def norm(d):
+                if isinstance(d, list): return d[0] if d else {}
+                return d
+            d = norm(data)
+            typ = (d.get("@type") or "").lower()
+            if "article" in typ or "newsarticle" in typ or "blogposting" in typ:
+                out["headline"] = d.get("headline") or d.get("name")
+                img = d.get("image")
+                if isinstance(img, list): img = img[0] if img else None
+                if isinstance(img, dict): img = img.get("url")
+                out["image"] = img
+                body = d.get("articleBody")
+                if body:
+                    parts = [clean_paragraph(x) for x in re.split(r"\n{1,}", body)]
+                    out["paragraphs"] = [p for p in parts if p]
+                break
+    except Exception:
+        pass
+    return out
 
 def pick_content_root(soup: BeautifulSoup) -> BeautifulSoup:
     sel = [
@@ -136,15 +172,27 @@ def paragraphs_from_html(html: str) -> List[str]:
         if p.find_parent(["script","nav","aside","footer","header","noscript","figure","style"]): continue
         c = clean_paragraph(p.get_text(" ", strip=True))
         if c: ps.append(c)
+
     if len(ps) < 2:
-        blocks = root.find_all(["div","section","span"])
-        for b in blocks:
-            if b.find(["p","figure","script","nav","aside","footer","header","noscript"]): continue
-            txt = clean_paragraph(b.get_text(" ", strip=True))
-            if txt and len(txt) > 120:
-                ps.append(txt)
+        # tentar listas longas
+        for ul in root.find_all(["ul","ol"]):
+            txt = clean_paragraph(ul.get_text(" ", strip=True))
+            if txt and len(txt) > 120: ps.append(txt)
             if len(ps) >= 8: break
-    if not ps and trafilatura:
+
+    if len(ps) < 2:
+        # Readability
+        try:
+            doc = ReadabilityDoc(html)
+            content_html = doc.summary()
+            csoup = BeautifulSoup(content_html, "html.parser")
+            for p in csoup.find_all("p"):
+                c = clean_paragraph(p.get_text(" ", strip=True))
+                if c: ps.append(c)
+        except Exception:
+            pass
+
+    if len(ps) < 2 and trafilatura:
         try:
             extracted = trafilatura.extract(html, include_comments=False, include_tables=False,
                                            include_images=False, favor_recall=True)
@@ -153,6 +201,17 @@ def paragraphs_from_html(html: str) -> List[str]:
                 ps = [p for p in parts if p][:12]
         except Exception:
             pass
+
+    if len(ps) < 2:
+        # Boilerpipe (artigos densos)
+        try:
+            extractor = boiler_extractors.ArticleExtractor()
+            text = extractor.get_content(html)
+            parts = [clean_paragraph(t) for t in re.split(r"\n{1,}", text)]
+            ps = [p for p in parts if p][:12] or ps
+        except Exception:
+            pass
+
     if not ps:
         txt = soup.get_text("\n", strip=True)
         chunks = [clean_paragraph(x) for x in re.split(r"\n{2,}", txt)]
@@ -161,14 +220,25 @@ def paragraphs_from_html(html: str) -> List[str]:
 
 def title_from_html(html: str) -> Optional[str]:
     soup = BeautifulSoup(html, "html.parser")
+    # Schema.org headline
+    sc = parse_schema_org(html).get("headline")
+    if sc: return sc
     h1 = soup.find("h1")
     if h1 and h1.get_text(strip=True): return h1.get_text(" ", strip=True)
+    m = soup.find("meta", property="og:title")
+    if m and m.get("content"): return m["content"].strip()
     t = soup.find("title")
     if t and t.get_text(strip=True): return t.get_text(" ", strip=True)
     return None
 
-def first_image_from_html(html: str) -> Optional[str]:
+def image_from_html(html: str) -> Optional[str]:
+    sc = parse_schema_org(html).get("image")
+    if sc: return sc
     return extract_og_image(BeautifulSoup(html, "html.parser"))
+
+
+def first_image_from_html(html: str) -> Optional[str]:
+    return image_from_html(html)
 
 def unwrap_special_links(url: str) -> str:
     try:
@@ -182,6 +252,7 @@ def unwrap_special_links(url: str) -> str:
     except Exception:
         pass
     return url
+
 
 # ----------------------------- DB -----------------------------
 
@@ -254,11 +325,23 @@ def db_list_by_keyword(slug: str, since_hours: int=12) -> List[Dict[str, Any]]:
             "published_at":r[5],"created_at":r[6]} for r in cur.fetchall()]
     con.close(); return out
 
-# ---------------------- Coleta / Extração ----------------------
+
+# ---------------------- Coleta (Google News + GDELT) ----------------------
 
 def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
-    q = quote_plus(keyword)  # sem when:12h
+    q = quote_plus(keyword)  # sem when:12h; filtro por tempo é feito aqui
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={region}&ceid=BR:pt-419"
+
+async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
+    try:
+        url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.3"})
+        if r.status_code != 200: return []
+        js = r.json()
+        arts = js.get("articles", [])
+        return [a.get("url") for a in arts if a.get("url")]
+    except Exception:
+        return []
 
 async def process_article(
     client: httpx.AsyncClient,
@@ -268,16 +351,26 @@ async def process_article(
     want_debug: bool = False,
 ):
     dbg: Dict[str, Any] = {"link": url, "amp_used": False}
-
     url = unwrap_special_links(url)
+
     html, info = await fetch_html_ex(client, url)
     dbg["fetch"] = info
-
     title = None; image = None; paragraphs: List[str] = []
+
     if html:
         title = title_from_html(html) or (feed_title or "")
         image = first_image_from_html(html)
-        paragraphs = paragraphs_from_html(html)
+        if not image:
+            # tentar <meta> no HTML bruto antes de parse completo
+            pass
+        # schema.org body curto
+        sc = parse_schema_org(html)
+        if sc.get("paragraphs"):
+            paragraphs = sc["paragraphs"]
+            if not title and sc.get("headline"): title = sc["headline"]
+            if not image and sc.get("image"): image = sc["image"]
+        if not paragraphs:
+            paragraphs = paragraphs_from_html(html)
 
     # AMP fallback
     if not paragraphs and html:
@@ -286,8 +379,7 @@ async def process_article(
         if amp and amp.get("href"):
             amp_url = urljoin(url, amp["href"])
             amp_html, amp_info = await fetch_html_ex(client, amp_url)
-            dbg["amp_used"] = True
-            dbg["amp_fetch"] = amp_info
+            dbg["amp_used"] = True; dbg["amp_fetch"] = amp_info
             if amp_html:
                 if not title: title = title_from_html(amp_html) or title
                 if not image: image = first_image_from_html(amp_html) or image
@@ -324,40 +416,48 @@ async def crawl_keyword(
 ):
     metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
     details: List[Dict[str, Any]] = []
+    links: List[str] = []
 
+    # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.2"})
-        if r.status_code != 200:
-            return ([], metrics, details) if want_debug else ([], metrics)
-        feed = feedparser.parse(r.text)
+                             headers={"User-Agent":"NewsAutomation/1.3"})
+        if r.status_code == 200:
+            feed = feedparser.parse(r.text)
+            for e in feed.entries[:80]:
+                link = e.get("link")
+                if link: links.append(link)
     except Exception:
-        metrics["fetch_fail"] += 1
-        return ([], metrics, details) if want_debug else ([], metrics)
+        pass
 
-    now = now_utc(); cutoff = now - timedelta(hours=hours_max)
+    # GDELT
+    try:
+        links += await gdelt_links(client, keyword, hours_max)
+    except Exception:
+        pass
+
+    # normalizar + deduplicar
+    seen = set()
+    norm_links: List[str] = []
+    for l in links:
+        if not l: continue
+        if l in seen: continue
+        seen.add(l)
+        norm_links.append(l)
+
+    # limitar e processar
+    now = now_utc()
+    sem = min(120, len(norm_links))
+    sem_links = norm_links[:sem]
     tasks: List[asyncio.Task] = []
-
-    for entry in feed.entries[:60]:
-        link = entry.get("link")
-        if not link: continue
-        pub = from_pubdate_struct(entry.get("published_parsed")) or now
-        if pub < cutoff: continue
-        src = None
-        try:
-            src_obj = entry.get("source", {})
-            src = getattr(src_obj, "title", None) or (src_obj.get("title") if isinstance(src_obj, dict) else None)
-        except Exception:
-            src = None
+    for link in sem_links:
         if want_debug:
             tasks.append(asyncio.create_task(
-                process_article(client, link, keyword, pub, entry.get("title"), src,
-                                require_h1, require_img, want_debug=True)
+                process_article(client, link, keyword, now, None, None, require_h1, require_img, want_debug=True)
             ))
         else:
             tasks.append(asyncio.create_task(
-                process_article(client, link, keyword, pub, entry.get("title"), src,
-                                require_h1, require_img, want_debug=False)
+                process_article(client, link, keyword, now, None, None, require_h1, require_img, want_debug=False)
             ))
 
     out: List[Dict[str, Any]] = []
@@ -387,6 +487,7 @@ async def crawl_keyword(
 
     return (out, metrics, details) if want_debug else (out, metrics)
 
+
 # ----------------------- App & Rotas ----------------------------
 
 def create_app() -> FastAPI:
@@ -415,7 +516,6 @@ def create_app() -> FastAPI:
                 stats[slugify(kw)] = m
             return {"collected": res, "stats": stats}
 
-    # NOVO: modo debug
     @app.post("/crawl_debug")
     async def crawl_debug(
         keywords: List[str] = Body(default=["brasil"]),
@@ -434,7 +534,6 @@ def create_app() -> FastAPI:
                 all_details[slug] = det
             return {"collected": res, "stats": stats, "details": all_details}
 
-    # NOVO: teste de fetch isolado
     @app.get("/debug_fetch")
     async def debug_fetch(url: str = Query(...)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
@@ -524,13 +623,9 @@ def create_app() -> FastAPI:
             "</style>"
         )
         parts.append(f"<h1>{(it['title'] or 'Sem título')}</h1>")
-        if it.get("image"):
-            parts.append(f"<img src='{it['image']}' alt='imagem'>")
-        for p in it.get("paragraphs", []):
-            parts.append(f"<p>{p}</p>")
-        parts.append(
-            f"<p><em>Fonte: <a href='{it['url']}' rel='nofollow noopener' target='_blank'>Matéria Original</a></em></p>"
-        )
+        if it.get("image"): parts.append(f"<img src='{it['image']}' alt='imagem'>")
+        for p in it.get("paragraphs", []): parts.append(f"<p>{p}</p>")
+        parts.append(f"<p><em>Fonte: <a href='{it['url']}' rel='nofollow noopener' target='_blank'>Matéria Original</a></em></p>")
         return HTMLResponse("".join(parts))
 
     @app.get("/q/{keyword_slug}", response_class=HTMLResponse)
@@ -549,8 +644,7 @@ def create_app() -> FastAPI:
             "</style>"
         )
         parts.append(f"<h1>Resultados: {keyword_slug}</h1><ul>")
-        for r in rows:
-            parts.append(f"<li><a href='/item/{r['id']}'>{r['title']}</a> — {r['source_name']}</li>")
+        for r in rows: parts.append(f"<li><a href='/item/{r['id']}'>{r['title']}</a> — {r['source_name']}</li>")
         parts.append("</ul>")
         return HTMLResponse("".join(parts))
 
