@@ -1,10 +1,8 @@
-fastapi
-uvicorn[standard]
-httpx
-feedparser
+Flask>=2.0
+requests
 beautifulsoup4
-trafilatura
-python-slugify
-readability-lxml
+Pillow
+cloudinary
+feedparser
+gunicorn
 lxml
-boilerpy3
