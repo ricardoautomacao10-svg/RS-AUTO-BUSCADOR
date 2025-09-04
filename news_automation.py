@@ -1,5 +1,10 @@
 # news_automation.py — coletor 24x7 com IA opcional (OpenRouter) + HOTFIX GNews
-# Agora também responde GET / com 200 OK (evita 405 no health-check)
+# Correções:
+# - Raiz GET (/) silenciosa (204) para não exibir tela
+# - Segue link externo do Google News antes de extrair
+# - Extração de imagem muito mais robusta (OG/Twitter/figure/srcset/data-src + absolutização)
+# - require_image permanece opcional (padrão False nos GET)
+# - Mantém /crawl, /crawl_site, /add em GET e POST para funcionar no cron
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -18,7 +23,11 @@ from readability import Document as ReadabilityDoc
 from boilerpy3 import extractors as boiler_extractors
 
 # IA opcional
-from ai_rewriter import rewrite_with_openrouter
+try:
+    from ai_rewriter import rewrite_with_openrouter
+except Exception:
+    async def rewrite_with_openrouter(title, paragraphs, *_args, **_kw):
+        return title, paragraphs
 
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 APP_TITLE = "News Automation"
@@ -55,6 +64,12 @@ def is_google_news(u: str) -> bool:
         return "news.google." in urlparse(u).netloc.lower()
     except Exception:
         return False
+def absolutize_url(src: Optional[str], base: Optional[str]) -> Optional[str]:
+    if not src: return None
+    try:
+        return urljoin(base or "", src)
+    except Exception:
+        return src
 
 BAD_SNIPPETS = [
     "leia mais","leia também","saiba mais","veja também","veja mais",
@@ -71,15 +86,46 @@ def clean_paragraph(p: str) -> Optional[str]:
     if re.match(r"^(?:leia|veja|saiba|assine|clique)\b", low): return None
     return txt
 
-def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
-    m = soup.find("meta", property="og:image")
-    if m and m.get("content"): return m["content"].strip()
-    m = soup.find("meta", attrs={"name": "twitter:image"})
-    if m and m.get("content"): return m["content"].strip()
-    for img in soup.find_all("img")[:20]:
-        src = (img.get("src") or img.get("data-src") or img.get("data-original") or "").strip()
+def extract_og_twitter_image(soup: BeautifulSoup) -> Optional[str]:
+    prefs = [
+        ("meta", {"property":"og:image"}),
+        ("meta", {"property":"og:image:secure_url"}),
+        ("meta", {"name":"twitter:image"}),
+        ("meta", {"name":"twitter:image:src"}),
+        ("link", {"rel":"image_src"}),
+        ("meta", {"itemprop":"image"}),
+    ]
+    for tag, attrs in prefs:
+        el = soup.find(tag, attrs=attrs)
+        if not el: continue
+        src = el.get("content") or el.get("href")
+        if src: return src.strip()
+    return None
+
+def extract_img_from_root(soup: BeautifulSoup) -> Optional[str]:
+    root = pick_content_root(soup)
+    # tenta <figure> primeiro
+    for fig in root.find_all(["figure","picture"], limit=6):
+        img = fig.find("img")
+        if not img: continue
+        src = img.get("src") or img.get("data-src") or img.get("data-original")
+        if not src:
+            srcset = img.get("srcset") or img.get("data-srcset") or ""
+            if srcset:
+                # escolhe a primeira URL do srcset
+                src = srcset.split(",")[0].strip().split(" ")[0].strip()
         if not src: continue
-        if any(x in src.lower() for x in [".svg","sprite","data:image"]): continue
+        if any(x in (src or "").lower() for x in [".svg","sprite","data:image"]): continue
+        return src
+    # senão, qualquer <img> relevante
+    for img in root.find_all("img", limit=10):
+        src = img.get("src") or img.get("data-src") or img.get("data-original")
+        if not src:
+            srcset = img.get("srcset") or img.get("data-srcset") or ""
+            if srcset:
+                src = srcset.split(",")[0].strip().split(" ")[0].strip()
+        if not src: continue
+        if any(x in (src or "").lower() for x in [".svg","sprite","data:image","logo","icon"]): continue
         return src
     return None
 
@@ -89,7 +135,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
         r = await client.get(
             url, timeout=25.0, follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/2.1",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/2.2",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -182,7 +228,8 @@ def paragraphs_from_html(html: str) -> List[str]:
         except Exception:
             pass
     if not ps:
-        txt = soup.get_text("\n", strip=True)
+        soup2 = BeautifulSoup(html, "html.parser")
+        txt = soup2.get_text("\n", strip=True)
         chunks = [clean_paragraph(x) for x in re.split(r"\n{2,}", txt)]
         ps = [c for c in chunks if c][:8]
     out, seen = [], set()
@@ -203,10 +250,25 @@ def title_from_html(html: str) -> Optional[str]:
     if t and t.get_text(strip=True): return t.get_text(" ", strip=True)
     return None
 
-def image_from_html(html: str) -> Optional[str]:
-    sc = parse_schema_org(html).get("image")
-    if sc: return sc
-    return extract_og_image(BeautifulSoup(html, "html.parser"))
+def image_from_html_best(html: str, base_for_abs: Optional[str]) -> Optional[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    # 1) Schema.org / OG / Twitter / link rel=image_src / itemprop
+    img = extract_og_twitter_image(soup)
+    if img: return absolutize_url(img, base_for_abs)
+    # 2) Conteúdo principal (figure/img/srcset/data-src)
+    img = extract_img_from_root(soup)
+    if img: return absolutize_url(img, base_for_abs)
+    # 3) fallback: primeira img global não-SVG
+    for img_tag in soup.find_all("img", limit=10):
+        src = img_tag.get("src") or img_tag.get("data-src") or img_tag.get("data-original")
+        if not src:
+            sset = img_tag.get("srcset") or img_tag.get("data-srcset") or ""
+            if sset:
+                src = sset.split(",")[0].strip().split(" ")[0].strip()
+        if not src: continue
+        if any(x in src.lower() for x in [".svg","sprite","data:image","logo","icon"]): continue
+        return absolutize_url(src, base_for_abs)
+    return None
 
 def unwrap_special_links(url: str) -> str:
     try:
@@ -358,7 +420,7 @@ def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/2.1"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/2.2"})
         if r.status_code != 200: return []
         js = r.json()
         return [a["url"] for a in js.get("articles", []) if a.get("url")]
@@ -393,6 +455,8 @@ async def process_article(
                 final_url_used = info2.get("final_url") or ext
                 dbg["gnews_follow_fetch"] = info2
 
+    base_for_abs = final_url_used or info.get("final_url") or url
+
     # seletores custom (se houver)
     if html and selectors:
         soup_c = BeautifulSoup(html, "html.parser")
@@ -412,7 +476,8 @@ async def process_article(
     # pipeline normal
     if html and not paragraphs:
         title = title or title_from_html(html) or (feed_title or "")
-        image = image or image_from_html(html)
+        # imagem robusta (absolutiza)
+        image = image or image_from_html_best(html, base_for_abs)
         sc = parse_schema_org(html)
         if sc.get("paragraphs"): paragraphs = sc["paragraphs"]
         if not paragraphs: paragraphs = paragraphs_from_html(html)
@@ -422,9 +487,10 @@ async def process_article(
         soup = BeautifulSoup(html, "html.parser")
         amp = soup.find("link", rel=lambda v: v and "amphtml" in v)
         if amp and amp.get("href"):
-            amp_url = urljoin(final_url_used or info.get("final_url") or url, amp["href"])
+            amp_url = urljoin(base_for_abs, amp["href"])
             amp_html, amp_info = await fetch_html_ex(client, amp_url)
             final_url_used = final_url_used or (amp_info.get("final_url") or amp_url)
+            base_for_abs = final_url_used or base_for_abs
             dbg["amp_used"] = True; dbg["amp_fetch"] = amp_info
             if amp_html:
                 if selectors:
@@ -434,16 +500,14 @@ async def process_article(
                         if el and not title: title = el.get_text(" ", strip=True)
                     if selectors.get("image_sel"):
                         el = soup3.select_one(selectors["image_sel"])
-                        if el and not image: image = el.get("content") or el.get("src") or el.get("data-src")
-                    if selectors.get("para_sel"):
-                        ps = []
-                        for el in soup3.select(selectors["para_sel"]):
-                            t = clean_paragraph(el.get_text(" ", strip=True))
-                            if t: ps.append(t)
-                        if ps and not paragraphs: paragraphs = ps[:14]
+                        if el and not image:
+                            image = el.get("content") or el.get("src") or el.get("data-src")
                 if not title: title = title_from_html(amp_html) or title
-                if not image: image = image_from_html(amp_html) or image
+                if not image: image = image_from_html_best(amp_html, base_for_abs)
                 if not paragraphs: paragraphs = paragraphs_from_html(amp_html)
+
+    # absolutiza imagem (se veio relativa)
+    image = absolutize_url(image, base_for_abs)
 
     dbg["title_found"] = bool(title and title.strip())
     dbg["image_found"] = bool(image)
@@ -456,18 +520,18 @@ async def process_article(
     if not paragraphs:
         return (None, "no_paragraphs", dbg) if want_debug else (None, "no_paragraphs")
 
-    # IA opcional
+    # IA opcional (após garantir conteúdo)
     use_ai = os.getenv("REWRITE_WITH_AI", "0").lower() not in ("0","false","no","off")
     try:
         if use_ai:
-            final_for_name = (final_url_used or info.get("final_url") or url)
+            final_for_name = base_for_abs
             src_name = hostname_from_url(final_for_name)
             title, paragraphs = await rewrite_with_openrouter(title, paragraphs, src_name, final_for_name)
     except Exception:
         pass  # falha na IA não pode derrubar a coleta
 
-    source_name = feed_source_name or hostname_from_url(final_url_used or info.get("final_url") or url)
-    final_url = final_url_used or info.get("final_url") or url
+    source_name = feed_source_name or hostname_from_url(base_for_abs)
+    final_url = base_for_abs
     item = {
         "id": stable_id(final_url),     # id com base no link FINAL do veículo
         "url": final_url,
@@ -492,7 +556,7 @@ async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
     # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/2.1"})
+                             headers={"User-Agent":"NewsAutomation/2.2"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
@@ -620,26 +684,9 @@ def create_app() -> FastAPI:
     @app.head("/")
     def root_head(): return Response(status_code=200)
 
-    @app.get("/", response_class=HTMLResponse)
-    def root_get():
-        return HTMLResponse(
-            "<!doctype html><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
-            "<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
-            "background:#0b0f14;color:#e8eef6;max-width:820px;margin:40px auto;padding:0 16px}"
-            "a{color:#8ecaff}</style>"
-            "<h1>News Automation</h1>"
-            "<p>OK. Endpoints úteis:</p>"
-            "<ul>"
-            "<li>POST/GET <code>/crawl</code></li>"
-            "<li>POST/GET <code>/crawl_site</code></li>"
-            "<li>POST/GET <code>/add</code></li>"
-            "<li>GET <code>/rss/&lt;slug&gt;</code></li>"
-            "<li>GET <code>/api/json/&lt;slug&gt;</code></li>"
-            "<li>GET <code>/cron/run</code></li>"
-            "</ul>"
-            "<p>Se você tiver <code>static/index.html</code>, acesse <a href='/static/index.html'>painel</a>.</p>"
-        )
+    # raiz silenciosa para health-checks (sem tela)
+    @app.get("/")
+    def root_get(): return Response(status_code=204)
 
     @app.get("/healthz")
     def healthz(): return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
@@ -676,7 +723,7 @@ def create_app() -> FastAPI:
                 stats[slugify(kw)] = m
             return {"collected": res, "stats": stats}
 
-    # GET compatível (para cron que só faz GET)
+    # GET compatível (para cron que só faz GET) — require_image default False
     @app.get("/crawl")
     async def crawl_get(keywords: str = Query("brasil"),
                         hours_max: int = Query(12, ge=1, le=72),
@@ -844,7 +891,7 @@ def create_app() -> FastAPI:
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             # palavra-chave
             for kw in ks:
-                items, m = await crawl_keyword(client, kw, 12, True, True, want_debug=False)
+                items, m = await crawl_keyword(client, kw, 12, True, False, want_debug=False)
                 results["crawl"][kw] = {"ok": m.get("ok", 0)}
             # listagens
             for u in lus:
