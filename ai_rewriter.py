@@ -48,7 +48,7 @@ Regras:
         js = r.json()
         content = (js.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
 
-    # Parse simples: 1ª linha = título; linhas seguintes = corpo
+    # Parse simples: 1ª linha = título; demais = corpo
     lines = [l.strip() for l in content.splitlines() if l.strip()]
     new_title = title
     new_pars = paragraphs
