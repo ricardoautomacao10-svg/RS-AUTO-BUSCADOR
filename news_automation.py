@@ -1,17 +1,13 @@
-# news_automation.py — coletor 24x7 (com tarefa de fundo) + GNews hotfix + IA opcional (fallback seguro)
-# - Raiz "/" volta a responder 200 com "online"
-# - /crawl, /crawl_site, /add funcionam em GET e POST
-# - Segue link externo do Google News antes de extrair
-# - Extração de imagem robusta e absolutização de URLs
-# - Tarefa de fundo a cada N minutos (configurável) para coletar automaticamente
-#   Vars de ambiente:
-#     DEFAULT_KEYWORDS="Litoral Norte de São Paulo,Ilhabela"
-#     DEFAULT_LIST_URLS="https://www.ilhabela.sp.gov.br/portal/noticias/3"
-#     HOURS_MAX=12
-#     REQUIRE_H1=true
-#     REQUIRE_IMAGE=false
-#     CRON_INTERVAL_MIN=15
-#     DISABLE_BACKGROUND=0
+# news_automation.py — coletor 24x7 com painel + filtros Ilhabela + títulos corrigidos
+# Vars de ambiente úteis:
+#   DEFAULT_KEYWORDS="Litoral Norte de São Paulo,Ilhabela"
+#   DEFAULT_LIST_URLS="https://www.ilhabela.sp.gov.br/portal/noticias/3"
+#   HOURS_MAX=12
+#   REQUIRE_H1=true
+#   REQUIRE_IMAGE=false
+#   CRON_INTERVAL_MIN=15
+#   DISABLE_BACKGROUND=0   (1 para desativar tarefa de fundo)
+#   REWRITE_WITH_AI=0      (1 para reescrever título/parágrafos via OpenRouter se ai_rewriter.py existir)
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
@@ -19,17 +15,16 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
 from html import escape
 
-import feedparser
-import httpx
+import httpx, feedparser
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, Response, JSONResponse
+from fastapi.responses import HTMLResponse, Response, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from readability import Document as ReadabilityDoc
 from boilerpy3 import extractors as boiler_extractors
 
-# ---------- IA opcional (fallback seguro se não existir o módulo)
+# ---------- IA opcional (fallback seguro)
 try:
     from ai_rewriter import rewrite_with_openrouter
 except Exception:
@@ -37,12 +32,10 @@ except Exception:
         return title, paragraphs
 
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
-APP_TITLE = "News Automation"
 
-# ---------- ENV p/ tarefa de fundo
 def _env_bool(name: str, default: bool) -> bool:
     v = os.getenv(name, str(default)).strip().lower()
-    return v not in ("0", "false", "no", "off", "")
+    return v in ("1","true","yes","on")
 
 DEFAULT_KEYWORDS = [s.strip() for s in os.getenv("DEFAULT_KEYWORDS", "Litoral Norte de São Paulo,Ilhabela").split(",") if s.strip()]
 DEFAULT_LIST_URLS = [s.strip() for s in os.getenv("DEFAULT_LIST_URLS", "https://www.ilhabela.sp.gov.br/portal/noticias/3").split(",") if s.strip()]
@@ -50,8 +43,7 @@ HOURS_MAX = int(os.getenv("HOURS_MAX", "12"))
 REQUIRE_H1 = _env_bool("REQUIRE_H1", True)
 REQUIRE_IMAGE = _env_bool("REQUIRE_IMAGE", False)
 CRON_INTERVAL_MIN = max(5, int(os.getenv("CRON_INTERVAL_MIN", "15")))
-DISABLE_BACKGROUND = _env_bool("DISABLE_BACKGROUND", False) is False  # invertido abaixo
-DISABLE_BACKGROUND = not DISABLE_BACKGROUND  # True desativa
+DISABLE_BACKGROUND = _env_bool("DISABLE_BACKGROUND", False)  # por padrão a tarefa roda
 
 # ---------- slugify fallback
 try:
@@ -136,7 +128,7 @@ def pick_content_root(soup: BeautifulSoup) -> BeautifulSoup:
 def extract_img_from_root(soup: BeautifulSoup) -> Optional[str]:
     root = pick_content_root(soup)
     for fig in root.find_all(["figure","picture"], limit=6):
-        img = fig.find("img"); 
+        img = fig.find("img")
         if not img: continue
         src = img.get("src") or img.get("data-src") or img.get("data-original")
         if not src:
@@ -161,7 +153,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
         r = await client.get(
             url, timeout=25.0, follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/2.3",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/2.4",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -254,15 +246,16 @@ def paragraphs_from_html(html: str) -> List[str]:
     return out[:14]
 
 def title_from_html(html: str) -> Optional[str]:
+    # ORDEM CORRIGIDA: schema -> og:title -> <title> -> <h1>
     sc = parse_schema_org(html).get("headline")
     if sc: return sc
     soup = BeautifulSoup(html, "html.parser")
-    h1 = soup.find("h1")
-    if h1 and h1.get_text(strip=True): return h1.get_text(" ", strip=True)
     m = soup.find("meta", property="og:title")
     if m and m.get("content"): return m["content"].strip()
     t = soup.find("title")
     if t and t.get_text(strip=True): return t.get_text(" ", strip=True)
+    h1 = soup.find("h1")
+    if h1 and h1.get_text(strip=True): return h1.get_text(" ", strip=True)
     return None
 
 def image_from_html_best(html: str, base_for_abs: Optional[str]) -> Optional[str]:
@@ -431,12 +424,16 @@ def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/2.3"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/2.4"})
         if r.status_code != 200: return []
         js = r.json()
         return [a["url"] for a in js.get("articles", []) if a.get("url")]
     except Exception:
         return []
+
+# ---------- filtros específicos Ilhabela
+def is_ilhabela_article(href: str) -> bool:
+    return re.search(r"https?://(?:www\.)?ilhabela\.sp\.gov\.br/portal/noticias/0/3/\d+/", href, flags=re.I) is not None
 
 # ---------- pipeline de artigo
 async def process_article(
@@ -518,19 +515,15 @@ async def process_article(
 
     image = absolutize_url(image, base_for_abs)
 
-    dbg["title_found"] = bool(title and title.strip())
-    dbg["image_found"] = bool(image)
-    dbg["p_count"] = len(paragraphs)
-
-    if require_h1 and not dbg["title_found"]:
-        return (None, "no_h1", dbg) if want_debug else (None, "no_h1")
-    if require_img and not dbg["image_found"]:
-        return (None, "no_image", dbg) if want_debug else (None, "no_image")
+    if require_h1 and not (title and title.strip()):
+        return (None, "no_h1", {"decision":"no_h1", **dbg}) if want_debug else (None, "no_h1")
+    if require_img and not image:
+        return (None, "no_image", {"decision":"no_image", **dbg}) if want_debug else (None, "no_image")
     if not paragraphs:
-        return (None, "no_paragraphs", dbg) if want_debug else (None, "no_paragraphs")
+        return (None, "no_paragraphs", {"decision":"no_paragraphs", **dbg}) if want_debug else (None, "no_paragraphs")
 
-    # IA opcional (não derruba em caso de erro)
-    use_ai = os.getenv("REWRITE_WITH_AI", "0").strip().lower() not in ("0","false","no","off","")
+    # IA opcional
+    use_ai = _env_bool("REWRITE_WITH_AI", False)
     try:
         if use_ai:
             final_for_name = base_for_abs
@@ -551,10 +544,7 @@ async def process_article(
         "published_at": iso(pub_dt),
         "keyword": slugify(keyword)
     }
-    if want_debug:
-        dbg["decision"] = "ok"
-        return item, None, dbg
-    return item, None
+    return (item, None, {"decision":"ok", **dbg}) if want_debug else (item, None)
 
 async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
                         require_h1: bool, require_img: bool, want_debug: bool=False):
@@ -565,7 +555,7 @@ async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
     # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/2.3"})
+                             headers={"User-Agent":"NewsAutomation/2.4"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
@@ -582,6 +572,10 @@ async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
     seen = set(); norm = []
     for l in links:
         if not l or l in seen: continue
+        # filtro Ilhabela se for domínio
+        if "ilhabela.sp.gov.br" in l.lower():
+            if not is_ilhabela_article(l):  # ignora listagens /3/
+                continue
         seen.add(l); norm.append(l)
 
     ts = now_utc()
@@ -593,15 +587,13 @@ async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
         ))
 
     out: List[Dict[str, Any]] = []
-    if not tasks: return (out, metrics, details) if want_debug else (out, metrics)
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
     for res in results:
         if want_debug:
             if isinstance(res, tuple) and len(res) == 3:
                 item, reason, dbg = res
                 if item: out.append(item); db_upsert(item); metrics["ok"] += 1
-                else: metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0)+1; dbg["decision"]=reason or "fetch_fail"
+                else: metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0)+1
                 details.append(dbg)
             else:
                 metrics["fetch_fail"] += 1
@@ -614,8 +606,10 @@ async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
                 metrics["fetch_fail"] += 1
     return (out, metrics, details) if want_debug else (out, metrics)
 
-DEFAULT_ARTICLE_REGEX = re.compile(r"/(noticia|noticias|materia|/20\d{2}/|/portal/noticias/)\b", re.I)
+DEFAULT_ARTICLE_REGEX = re.compile(r"/(noticia|noticias|materia|/20\d{2}/)\b", re.I)
 def looks_like_article_url(href: str, url_regex: Optional[str]) -> bool:
+    if "ilhabela.sp.gov.br" in href.lower():
+        return is_ilhabela_article(href)
     if url_regex:
         try: return re.search(url_regex, href, flags=re.I) is not None
         except Exception: pass
@@ -665,7 +659,7 @@ async def crawl_listing_once(client: httpx.AsyncClient, list_url: str, keyword: 
                 if isinstance(res, tuple) and len(res)==3:
                     item, reason, dbg = res
                     if item: out.append(item); db_upsert(item); metrics["ok"]+=1
-                    else: metrics[reason or "fetch_fail"]=metrics.get(reason or "fetch_fail",0)+1; dbg["decision"]=reason or "fetch_fail"
+                    else: metrics[reason or "fetch_fail"]=metrics.get(reason or "fetch_fail",0)+1
                     details.append(dbg)
                 else:
                     metrics["fetch_fail"]+=1
@@ -687,7 +681,7 @@ LAST_BG_SUMMARY: Dict[str, Any] = {}
 
 def create_app() -> FastAPI:
     db_init()
-    app = FastAPI(title=APP_TITLE)
+    app = FastAPI(title="News Automation")
     app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                        allow_methods=["*"], allow_headers=["*"])
     app.mount("/static", StaticFiles(directory="static", html=True, check_dir=False), name="static")
@@ -695,27 +689,28 @@ def create_app() -> FastAPI:
     @app.head("/")
     def root_head(): return Response(status_code=200)
 
+    # se houver UI em /static/index.html, redireciona pra ela; senão mostra link
     @app.get("/", response_class=HTMLResponse)
     def root_get():
+        if os.path.exists("static/index.html"):
+            return RedirectResponse(url="/static/index.html")
         return HTMLResponse(
             "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'/>"
             "<style>body{font-family:system-ui,Segoe UI,Roboto,Arial;max-width:760px;margin:40px auto;padding:0 16px}</style>"
             "<h1>News Automation — online</h1>"
-            "<p>Use <code>/rss/&lt;slug&gt;</code> (ex: <a href='/rss/litoral-norte-de-sao-paulo'>/rss/litoral-norte-de-sao-paulo</a>)</p>"
-            "<p>Saúde: <a href='/healthz'>/healthz</a></p>"
+            "<p>Crie <code>static/index.html</code> para o painel. Enquanto isso, use:</p>"
+            "<ul>"
+            "<li><a href='/rss/litoral-norte-de-sao-paulo'>/rss/litoral-norte-de-sao-paulo</a></li>"
+            "<li><a href='/healthz'>/healthz</a></li>"
+            "</ul>"
         )
 
     @app.get("/healthz")
     def healthz():
-        return {
-            "ok": True,
-            "time": iso(now_utc()),
-            "db": DB_PATH,
-            "last_bg_run": LAST_BG_RUN,
-            "last_bg_summary": LAST_BG_SUMMARY
-        }
+        return {"ok": True, "time": iso(now_utc()), "db": DB_PATH,
+                "last_bg_run": LAST_BG_RUN, "last_bg_summary": LAST_BG_SUMMARY}
 
-    # ---- Regras (opcional)
+    # ---- Regras
     @app.get("/rules/get")
     def rules_get(slug: str = Query(...)):
         return db_rules_get(slugify(slug)) or {}
@@ -736,24 +731,30 @@ def create_app() -> FastAPI:
     async def crawl_post(keywords: List[str] = Body(default=["brasil"]),
                          hours_max: int = Body(default=12),
                          require_h1: bool = Body(default=True),
-                         require_image: bool = Body(default=False)):
+                         require_image: bool = Body(default=False),
+                         debug: bool = Body(default=False)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}
+            dets: Dict[str, Any] = {}
             for kw in keywords:
-                items, m = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=False)
+                items, m, d = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=debug)
                 by_id = {it["id"]: it for it in items}
                 clean_items = list(by_id.values())
                 res[slugify(kw)] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in clean_items]
                 stats[slugify(kw)] = m
-            return {"collected": res, "stats": stats}
+                if debug: dets[slugify(kw)] = d
+            out = {"collected": res, "stats": stats}
+            if debug: out["details"] = dets
+            return out
 
     @app.get("/crawl")
     async def crawl_get(keywords: str = Query("brasil"),
                         hours_max: int = Query(12, ge=1, le=72),
                         require_h1: bool = Query(True),
-                        require_image: bool = Query(False)):
+                        require_image: bool = Query(False),
+                        debug: bool = Query(False)):
         kws = [k.strip() for k in keywords.split(",") if k.strip()]
-        return await crawl_post(kws, hours_max, require_h1, require_image)
+        return await crawl_post(kws, hours_max, require_h1, require_image, debug)
 
     # ---- Listagem
     @app.post("/crawl_site")
@@ -762,17 +763,20 @@ def create_app() -> FastAPI:
                               selector: Optional[str] = Body(default=None),
                               url_regex: Optional[str] = Body(default=None),
                               require_h1: bool = Body(default=True),
-                              require_image: bool = Body(default=False)):
+                              require_image: bool = Body(default=False),
+                              debug: bool = Body(default=False)):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
         selector = selector or rule.get("list_selector")
         url_regex = url_regex or rule.get("url_regex")
         sels = {"title_sel": rule.get("title_sel"), "image_sel": rule.get("image_sel"), "para_sel": rule.get("para_sel")}
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-            items, m = await crawl_listing_once(client, url, keyword, selector, url_regex,
-                                                require_h1, require_image, want_debug=False,
-                                                selectors_article=sels)
-            return {"ok": True, "found": len(items), "stats": m, "keyword": slug}
+            items, m, d = await crawl_listing_once(client, url, keyword, selector, url_regex,
+                                                   require_h1, require_image, want_debug=debug,
+                                                   selectors_article=sels)
+            out = {"ok": True, "found": len(items), "stats": m, "keyword": slug}
+            if debug: out["details"] = d
+            return out
 
     @app.get("/crawl_site")
     async def crawl_site_get(url: str = Query(...),
@@ -780,8 +784,9 @@ def create_app() -> FastAPI:
                              selector: Optional[str] = Query(default=None),
                              url_regex: Optional[str] = Query(default=None),
                              require_h1: bool = Query(True),
-                             require_image: bool = Query(False)):
-        return await crawl_site_post(url, keyword, selector, url_regex, require_h1, require_image)
+                             require_image: bool = Query(False),
+                             debug: bool = Query(False)):
+        return await crawl_site_post(url, keyword, selector, url_regex, require_h1, require_image, debug)
 
     # ---- Teste de fetch
     @app.get("/debug_fetch")
@@ -894,7 +899,7 @@ def create_app() -> FastAPI:
         parts.append("</ul>")
         return HTMLResponse("".join(parts))
 
-    # ---------- tarefa de fundo 24x7 (se não estiver desativada)
+    # ---------- tarefa de fundo 24x7
     @app.on_event("startup")
     async def _bg_start():
         if DISABLE_BACKGROUND:
@@ -905,11 +910,9 @@ def create_app() -> FastAPI:
                 try:
                     summary = {"time": iso(now_utc()), "keywords": {}, "lists": []}
                     async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-                        # palavras-chave
                         for kw in DEFAULT_KEYWORDS:
                             _, m = await crawl_keyword(client, kw, HOURS_MAX, REQUIRE_H1, REQUIRE_IMAGE, want_debug=False)
                             summary["keywords"][kw] = m
-                        # listagens (usam o primeiro slug de keyword, ou 'geral')
                         kslug = slugify(DEFAULT_KEYWORDS[0]) if DEFAULT_KEYWORDS else "geral"
                         for u in DEFAULT_LIST_URLS:
                             _, m = await crawl_listing_once(client, u, kslug,
