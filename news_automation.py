@@ -1,10 +1,4 @@
-# news_automation.py
-# Coletor de notícias com:
-# - Palavra-chave (Google News + GDELT) com follow para link externo do GNews
-# - Raspar LISTAGEM com regex/seletores persistentes por slug
-# - Extração robusta (Schema.org, Readability, Trafilatura, Boilerpipe) + AMP fallback
-# - Endpoints: /crawl, /crawl_site, /add, /api/json/{slug}, /rss/{slug}, /rules/* e UI em / (static/index.html)
-
+# news_automation.py — coletor 24x7 com IA opcional (OpenRouter)
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -19,14 +13,16 @@ from fastapi import FastAPI, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-
 from readability import Document as ReadabilityDoc
 from boilerpy3 import extractors as boiler_extractors
+
+# IA opcional
+from ai_rewriter import rewrite_with_openrouter
 
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 APP_TITLE = "News Automation"
 
-# slugify fallback
+# slugify simples (fallback)
 try:
     from slugify import slugify
 except Exception:
@@ -38,30 +34,21 @@ except Exception:
 
 # trafilatura opcional
 try:
-    import trafilatura  # type: ignore
+    import trafilatura
 except Exception:
     trafilatura = None
 
-
-# ----------------------------- utils -----------------------------
-
-def now_utc() -> datetime:
-    return datetime.now(timezone.utc)
-
-def iso(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).isoformat()
-
+# -------- utils
+def now_utc() -> datetime: return datetime.now(timezone.utc)
+def iso(dt: datetime) -> str: return dt.astimezone(timezone.utc).isoformat()
 def stable_id(url: str) -> str:
     h = hashlib.sha256(url.encode("utf-8")).digest()[:9]
     return base64.urlsafe_b64encode(h).decode("ascii").rstrip("=")
-
 def hostname_from_url(url: str) -> str:
     try:
-        host = urlparse(url).netloc
-        return re.sub(r"^www\.", "", host)
+        return re.sub(r"^www\.", "", urlparse(url).netloc)
     except Exception:
         return "fonte"
-
 def is_google_news(u: str) -> bool:
     try:
         return "news.google." in urlparse(u).netloc.lower()
@@ -70,12 +57,9 @@ def is_google_news(u: str) -> bool:
 
 BAD_SNIPPETS = [
     "leia mais","leia também","saiba mais","veja também","veja mais","continue lendo","continue a ler",
-    "clique aqui","acesse aqui","inscreva-se","assine","assinar","newsletter","compartilhe","siga-nos",
-    "siga no instagram","siga no twitter","siga no x","siga no facebook","acompanhe nas redes",
-    "publicidade","anúncio","publieditorial","conteúdo patrocinado","oferta","voltar ao topo","voltar para o início",
-    "cookies","aceitar cookies",
+    "clique aqui","acesse aqui","inscreva-se","assine","newsletter","compartilhe","siga-nos",
+    "instagram","twitter","x.com","facebook","publicidade","anúncio","voltar ao topo","cookies"
 ]
-
 def clean_paragraph(p: str) -> Optional[str]:
     txt = re.sub(r"\s+", " ", p or "").strip()
     if not txt: return None
@@ -93,8 +77,7 @@ def extract_og_image(soup: BeautifulSoup) -> Optional[str]:
     for img in soup.find_all("img")[:20]:
         src = (img.get("src") or img.get("data-src") or img.get("data-original") or "").strip()
         if not src: continue
-        ls = src.lower()
-        if any(x in ls for x in [".svg","sprite","data:image"]): continue
+        if any(x in src.lower() for x in [".svg","sprite","data:image"]): continue
         return src
     return None
 
@@ -104,7 +87,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
         r = await client.get(
             url, timeout=25.0, follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/1.8",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/1.9",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -122,18 +105,14 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
         info["error"] = str(e)[:300]
     return None, info
 
-
-# ----------------------------- extração -----------------------------
-
+# -------- extração
 def parse_schema_org(html: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {}
     try:
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = json.loads(tag.string or "{}")
-            except Exception:
-                continue
+            try: data = json.loads(tag.string or "{}")
+            except Exception: continue
             d = data[0] if isinstance(data, list) and data else data
             typ = (d.get("@type") or "").lower()
             if any(t in typ for t in ["article","newsarticle","blogposting"]):
@@ -153,9 +132,8 @@ def parse_schema_org(html: str) -> Dict[str, Any]:
 
 def pick_content_root(soup: BeautifulSoup) -> BeautifulSoup:
     sel = [
-        'article','[itemprop="articleBody"]','.article-body','.post-content','.entry-content','.story-content',
-        '.content__article-body','.content-article','.materia-conteudo','#article','.article__content',
-        '#content .post','.texto','section.article',
+        'article','[itemprop="articleBody"]','.article-body','.post-content','.entry-content',
+        '.story-content','#article','.article__content','#content .post','.texto'
     ]
     for s in sel:
         el = soup.select_one(s)
@@ -170,13 +148,11 @@ def paragraphs_from_html(html: str) -> List[str]:
         if p.find_parent(["script","nav","aside","footer","header","noscript","figure","style"]): continue
         c = clean_paragraph(p.get_text(" ", strip=True))
         if c: ps.append(c)
-
     if len(ps) < 2:
         for ul in root.find_all(["ul","ol"]):
             txt = clean_paragraph(ul.get_text(" ", strip=True))
             if txt and len(txt) > 120: ps.append(txt)
             if len(ps) >= 8: break
-
     if len(ps) < 2:
         try:
             doc = ReadabilityDoc(html)
@@ -186,7 +162,6 @@ def paragraphs_from_html(html: str) -> List[str]:
                 if c: ps.append(c)
         except Exception:
             pass
-
     if len(ps) < 2 and trafilatura:
         try:
             extracted = trafilatura.extract(html, include_comments=False, include_tables=False,
@@ -196,7 +171,6 @@ def paragraphs_from_html(html: str) -> List[str]:
                 ps = [p for p in parts if p][:12]
         except Exception:
             pass
-
     if len(ps) < 2:
         try:
             extractor = boiler_extractors.ArticleExtractor()
@@ -205,7 +179,6 @@ def paragraphs_from_html(html: str) -> List[str]:
             ps = [p for p in parts if p][:12] or ps
         except Exception:
             pass
-
     if not ps:
         txt = soup.get_text("\n", strip=True)
         chunks = [clean_paragraph(x) for x in re.split(r"\n{2,}", txt)]
@@ -232,9 +205,6 @@ def image_from_html(html: str) -> Optional[str]:
     sc = parse_schema_org(html).get("image")
     if sc: return sc
     return extract_og_image(BeautifulSoup(html, "html.parser"))
-
-def first_image_from_html(html: str) -> Optional[str]:
-    return image_from_html(html)
 
 def unwrap_special_links(url: str) -> str:
     try:
@@ -269,9 +239,7 @@ def extract_external_from_gnews(html: str, base_url: str) -> Optional[str]:
         return None
     return None
 
-
-# ----------------------------- DB -----------------------------
-
+# -------- DB
 def db_init() -> None:
     global DB_PATH
     dirpath = os.path.dirname(DB_PATH)
@@ -281,7 +249,6 @@ def db_init() -> None:
         DB_PATH = "./data/news.db"
         try: os.makedirs("./data", exist_ok=True)
         except Exception: DB_PATH = "./news.db"
-
     con = sqlite3.connect(DB_PATH)
     con.execute("""
         CREATE TABLE IF NOT EXISTS items (
@@ -381,9 +348,7 @@ def db_rules_clear(slug: str) -> None:
     con.execute("DELETE FROM rules WHERE slug=?", (slug,))
     con.commit(); con.close()
 
-
-# ---------------------- keyword (gnews + gdelt) ----------------------
-
+# -------- keyword (gnews + gdelt)
 def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
     q = quote_plus(keyword)
     return f"https://news.google.com/rss/search?q={q}&hl={lang}&gl={region}&ceid=BR:pt-419"
@@ -391,16 +356,14 @@ def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.8"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/1.9"})
         if r.status_code != 200: return []
         js = r.json()
         return [a["url"] for a in js.get("articles", []) if a.get("url")]
     except Exception:
         return []
 
-
-# ----------------------------- process_article -----------------------------
-
+# -------- process_article (inclui IA e follow do GNews)
 async def process_article(
     client: httpx.AsyncClient,
     url: str, keyword: str, pub_dt: datetime,
@@ -415,38 +378,39 @@ async def process_article(
     html, info = await fetch_html_ex(client, url)
     dbg["fetch"] = info
     title = None; image = None; paragraphs: List[str] = []
+    final_url_used = None
 
-    # 0) seletores customizados (se houver)
+    # seletores custom (se houver)
     if html and selectors:
-        soup_custom = BeautifulSoup(html, "html.parser")
+        soup_c = BeautifulSoup(html, "html.parser")
         if selectors.get("title_sel"):
-            el = soup_custom.select_one(selectors["title_sel"])
+            el = soup_c.select_one(selectors["title_sel"])
             if el: title = el.get_text(" ", strip=True)
         if selectors.get("image_sel"):
-            el = soup_custom.select_one(selectors["image_sel"])
-            if el:
-                image = el.get("content") or el.get("src") or el.get("data-src")
+            el = soup_c.select_one(selectors["image_sel"])
+            if el: image = el.get("content") or el.get("src") or el.get("data-src")
         if selectors.get("para_sel"):
-            ps: List[str] = []
-            for el in soup_custom.select(selectors["para_sel"]):
-                txt = clean_paragraph(el.get_text(" ", strip=True))
-                if txt: ps.append(txt)
+            ps = []
+            for el in soup_c.select(selectors["para_sel"]):
+                t = clean_paragraph(el.get_text(" ", strip=True))
+                if t: ps.append(t)
             if ps: paragraphs = ps[:14]
 
-    # 1) pipeline normal
+    # pipeline normal
     if html and not paragraphs:
         title = title or title_from_html(html) or (feed_title or "")
-        image = image or first_image_from_html(html)
+        image = image or image_from_html(html)
         sc = parse_schema_org(html)
         if sc.get("paragraphs"): paragraphs = sc["paragraphs"]
         if not paragraphs: paragraphs = paragraphs_from_html(html)
 
-    # 2) se for Google News, seguir link externo
+    # seguir link externo do Google News
     if (not paragraphs) and info.get("final_url") and is_google_news(info["final_url"]):
         ext = extract_external_from_gnews(html or "", info["final_url"])
         dbg["gnews_external"] = ext
         if ext:
             html2, info2 = await fetch_html_ex(client, ext)
+            final_url_used = info2.get("final_url") or ext
             dbg["gnews_follow_fetch"] = info2
             if html2:
                 if selectors and not paragraphs:
@@ -456,27 +420,27 @@ async def process_article(
                         if el and not title: title = el.get_text(" ", strip=True)
                     if selectors.get("image_sel"):
                         el = soup2.select_one(selectors["image_sel"])
-                        if el and not image:
-                            image = el.get("content") or el.get("src") or el.get("data-src")
+                        if el and not image: image = el.get("content") or el.get("src") or el.get("data-src")
                     if selectors.get("para_sel"):
-                        ps: List[str] = []
+                        ps = []
                         for el in soup2.select(selectors["para_sel"]):
-                            txt = clean_paragraph(el.get_text(" ", strip=True))
-                            if txt: ps.append(txt)
+                            t = clean_paragraph(el.get_text(" ", strip=True))
+                            if t: ps.append(t)
                         if ps and not paragraphs: paragraphs = ps[:14]
                 if not title: title = title_from_html(html2) or title
-                if not image: image = first_image_from_html(html2) or image
+                if not image: image = image_from_html(html2) or image
                 sc2 = parse_schema_org(html2)
                 if sc2.get("paragraphs"): paragraphs = sc2["paragraphs"]
                 if not paragraphs: paragraphs = paragraphs_from_html(html2)
 
-    # 3) AMP fallback
+    # AMP fallback
     if (not paragraphs) and (html or ""):
         soup = BeautifulSoup(html, "html.parser")
         amp = soup.find("link", rel=lambda v: v and "amphtml" in v)
         if amp and amp.get("href"):
             amp_url = urljoin(info.get("final_url") or url, amp["href"])
             amp_html, amp_info = await fetch_html_ex(client, amp_url)
+            final_url_used = final_url_used or (amp_info.get("final_url") or amp_url)
             dbg["amp_used"] = True; dbg["amp_fetch"] = amp_info
             if amp_html:
                 if selectors:
@@ -486,16 +450,15 @@ async def process_article(
                         if el and not title: title = el.get_text(" ", strip=True)
                     if selectors.get("image_sel"):
                         el = soup3.select_one(selectors["image_sel"])
-                        if el and not image:
-                            image = el.get("content") or el.get("src") or el.get("data-src")
+                        if el and not image: image = el.get("content") or el.get("src") or el.get("data-src")
                     if selectors.get("para_sel"):
-                        ps: List[str] = []
+                        ps = []
                         for el in soup3.select(selectors["para_sel"]):
-                            txt = clean_paragraph(el.get_text(" ", strip=True))
-                            if txt: ps.append(txt)
+                            t = clean_paragraph(el.get_text(" ", strip=True))
+                            if t: ps.append(t)
                         if ps and not paragraphs: paragraphs = ps[:14]
                 if not title: title = title_from_html(amp_html) or title
-                if not image: image = first_image_from_html(amp_html) or image
+                if not image: image = image_from_html(amp_html) or image
                 if not paragraphs: paragraphs = paragraphs_from_html(amp_html)
 
     dbg["title_found"] = bool(title and title.strip())
@@ -509,8 +472,18 @@ async def process_article(
     if not paragraphs:
         return (None, "no_paragraphs", dbg) if want_debug else (None, "no_paragraphs")
 
-    source_name = feed_source_name or hostname_from_url(info.get("final_url") or url)
-    final_url = info.get("final_url") or url
+    # IA opcional
+    use_ai = os.getenv("REWRITE_WITH_AI", "0").lower() not in ("0","false","no","off")
+    try:
+        if use_ai:
+            final_for_name = (final_url_used or info.get("final_url") or url)
+            src_name = hostname_from_url(final_for_name)
+            title, paragraphs = await rewrite_with_openrouter(title, paragraphs, src_name, final_for_name)
+    except Exception:
+        pass  # falha na IA não pode derrubar a coleta
+
+    source_name = feed_source_name or hostname_from_url(final_url_used or info.get("final_url") or url)
+    final_url = final_url_used or info.get("final_url") or url
     item = {
         "id": stable_id(final_url),
         "url": final_url,
@@ -526,23 +499,16 @@ async def process_article(
         return item, None, dbg
     return item, None
 
-
-async def crawl_keyword(
-    client: httpx.AsyncClient,
-    keyword: str,
-    hours_max: int,
-    require_h1: bool,
-    require_img: bool,
-    want_debug: bool = False
-):
+async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
+                        require_h1: bool, require_img: bool, want_debug: bool=False):
     metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
     details: List[Dict[str, Any]] = []
     links: List[str] = []
 
-    # Google News RSS
+    # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/1.8"})
+                             headers={"User-Agent":"NewsAutomation/1.9"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
@@ -550,84 +516,57 @@ async def crawl_keyword(
                 if link: links.append(link)
     except Exception:
         pass
-
     # GDELT
     try:
         links += await gdelt_links(client, keyword, hours_max)
     except Exception:
         pass
 
-    # dedupe
-    seen = set(); norm_links: List[str] = []
+    seen = set(); norm = []
     for l in links:
-        if not l: continue
-        if l in seen: continue
-        seen.add(l); norm_links.append(l)
+        if not l or l in seen: continue
+        seen.add(l); norm.append(l)
 
     ts = now_utc()
-    tasks: List[asyncio.Task] = []
-    for link in norm_links[:150]:
-        if want_debug:
-            tasks.append(asyncio.create_task(
-                process_article(client, link, keyword, ts, None, None,
-                                require_h1, require_img, want_debug=True)
-            ))
-        else:
-            tasks.append(asyncio.create_task(
-                process_article(client, link, keyword, ts, None, None,
-                                require_h1, require_img, want_debug=False)
-            ))
+    tasks = []
+    for link in norm[:150]:
+        tasks.append(asyncio.create_task(
+            process_article(client, link, keyword, ts, None, None,
+                            require_h1, require_img, want_debug=want_debug)
+        ))
 
     out: List[Dict[str, Any]] = []
-    if not tasks:
-        return (out, metrics, details) if want_debug else (out, metrics)
+    if not tasks: return (out, metrics, details) if want_debug else (out, metrics)
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
     for res in results:
         if want_debug:
             if isinstance(res, tuple) and len(res) == 3:
                 item, reason, dbg = res
-                if item:
-                    out.append(item); db_upsert(item); metrics["ok"] += 1
-                else:
-                    metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
-                    dbg["decision"] = reason or "fetch_fail"
+                if item: out.append(item); db_upsert(item); metrics["ok"] += 1
+                else: metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0)+1; dbg["decision"]=reason or "fetch_fail"
                 details.append(dbg)
             else:
                 metrics["fetch_fail"] += 1
         else:
             if isinstance(res, tuple):
                 item, reason = res
-                if item:
-                    out.append(item); db_upsert(item); metrics["ok"] += 1
-                else:
-                    metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                if item: out.append(item); db_upsert(item); metrics["ok"] += 1
+                else: metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0)+1
             else:
                 metrics["fetch_fail"] += 1
-
     return (out, metrics, details) if want_debug else (out, metrics)
 
-
-# ---------------------- listagem (site) ----------------------
-
-DEFAULT_ARTICLE_REGEX = re.compile(
-    r"/(noticia|notícias|noticias|materia|post|/20\d{2}/|/portal/noticias/)\b", re.I
-)
-
+# -------- listagem
+DEFAULT_ARTICLE_REGEX = re.compile(r"/(noticia|noticias|materia|/20\d{2}/|/portal/noticias/)\b", re.I)
 def looks_like_article_url(href: str, url_regex: Optional[str]) -> bool:
     if url_regex:
-        try:
-            return re.search(url_regex, href, flags=re.I) is not None
-        except Exception:
-            pass
+        try: return re.search(url_regex, href, flags=re.I) is not None
+        except Exception: pass
     return DEFAULT_ARTICLE_REGEX.search(href) is not None
 
-def extract_links_from_listing(html: str, base_url: str,
-                               selector: Optional[str],
-                               url_regex: Optional[str]) -> List[str]:
-    soup = BeautifulSoup(html or "", "html.parser")
-    links: List[str] = []
-
+def extract_links_from_listing(html: str, base_url: str, selector: Optional[str], url_regex: Optional[str]) -> List[str]:
+    soup = BeautifulSoup(html or "", "html.parser"); links=[]
     if selector:
         for el in soup.select(selector):
             a = el if el.name == "a" else el.find("a", href=True)
@@ -635,14 +574,11 @@ def extract_links_from_listing(html: str, base_url: str,
             href = urljoin(base_url, a["href"])
             if href.startswith(("http://","https://")) and looks_like_article_url(href, url_regex):
                 links.append(href)
-
     if not selector or not links:
         for a in soup.find_all("a", href=True):
             href = urljoin(base_url, a["href"])
             if not href.startswith(("http://","https://")): continue
-            if looks_like_article_url(href, url_regex):
-                links.append(href)
-
+            if looks_like_article_url(href, url_regex): links.append(href)
     out, seen = [], set()
     for l in links:
         l = l.split("#")[0]
@@ -650,64 +586,46 @@ def extract_links_from_listing(html: str, base_url: str,
         seen.add(l); out.append(l)
     return out[:150]
 
-async def crawl_listing_once(
-    client: httpx.AsyncClient, list_url: str, keyword: str,
-    selector: Optional[str], url_regex: Optional[str],
-    require_h1: bool, require_img: bool, want_debug: bool,
-    selectors_article: Optional[Dict[str, Optional[str]]] = None,
-):
+async def crawl_listing_once(client: httpx.AsyncClient, list_url: str, keyword: str,
+                             selector: Optional[str], url_regex: Optional[str],
+                             require_h1: bool, require_img: bool, want_debug: bool,
+                             selectors_article: Optional[Dict[str, Optional[str]]] = None):
     html, info = await fetch_html_ex(client, list_url)
     if not html:
         return ([], {"fetch_fail":1}, [{"link":list_url,"fetch":info,"decision":"fetch_fail"}]) if want_debug else ([], {"fetch_fail":1})
-
     article_links = extract_links_from_listing(html, info.get("final_url") or list_url, selector, url_regex)
-    tasks: List[asyncio.Task] = []
-    now = now_utc()
-    for url in article_links:
-        if want_debug:
-            tasks.append(asyncio.create_task(
-                process_article(client, url, keyword, now, None, None, require_h1, require_img, want_debug=True, selectors=selectors_article)
-            ))
-        else:
-            tasks.append(asyncio.create_task(
-                process_article(client, url, keyword, now, None, None, require_h1, require_img, want_debug=False, selectors=selectors_article)
-            ))
-
+    tasks = []
+    for u in article_links:
+        tasks.append(asyncio.create_task(
+            process_article(client, u, keyword, now_utc(), None, None,
+                            require_h1, require_img, want_debug=want_debug, selectors=selectors_article)
+        ))
     metrics = {"ok":0,"fetch_fail":0,"no_h1":0,"no_image":0,"no_paragraphs":0}
-    details: List[Dict[str, Any]] = []
-    out: List[Dict[str, Any]] = []
+    details: List[Dict[str, Any]] = []; out=[]
     if tasks:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for res in results:
             if want_debug:
-                if isinstance(res, tuple) and len(res) == 3:
+                if isinstance(res, tuple) and len(res)==3:
                     item, reason, dbg = res
-                    if item:
-                        out.append(item); db_upsert(item); metrics["ok"] += 1
-                    else:
-                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
-                        dbg["decision"] = reason or "fetch_fail"
+                    if item: out.append(item); db_upsert(item); metrics["ok"]+=1
+                    else: metrics[reason or "fetch_fail"]=metrics.get(reason or "fetch_fail",0)+1; dbg["decision"]=reason or "fetch_fail"
                     details.append(dbg)
                 else:
-                    metrics["fetch_fail"] += 1
+                    metrics["fetch_fail"]+=1
             else:
                 if isinstance(res, tuple):
                     item, reason = res
-                    if item:
-                        out.append(item); db_upsert(item); metrics["ok"] += 1
-                    else:
-                        metrics[reason or "fetch_fail"] = metrics.get(reason or "fetch_fail", 0) + 1
+                    if item: out.append(item); db_upsert(item); metrics["ok"]+=1
+                    else: metrics[reason or "fetch_fail"]=metrics.get(reason or "fetch_fail",0)+1
                 else:
-                    metrics["fetch_fail"] += 1
-
+                    metrics["fetch_fail"]+=1
     if want_debug:
         details.insert(0, {"link": list_url, "final_url": info.get("final_url"), "decision":"listing_fetched", "articles_found": len(article_links)})
         return out, metrics, details
     return out, metrics
 
-
-# ----------------------- app & rotas ----------------------------
-
+# -------- app & rotas
 def create_app() -> FastAPI:
     db_init()
     app = FastAPI(title=APP_TITLE)
@@ -716,45 +634,33 @@ def create_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory="static", html=True, check_dir=False), name="static")
 
     @app.head("/")
-    def root_head():
-        return Response(status_code=200)
+    def root_head(): return Response(status_code=200)
 
     @app.get("/healthz")
-    def healthz():
-        return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
+    def healthz(): return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
 
-    # ---- regras por slug
+    # regras
     @app.get("/rules/get")
     def rules_get(slug: str = Query(...)):
-        r = db_rules_get(slugify(slug))
-        return r or {}
-
+        return db_rules_get(slugify(slug)) or {}
     @app.post("/rules/set")
-    def rules_set(
-        slug: str = Body(...),
-        url_regex: Optional[str] = Body(default=None),
-        list_selector: Optional[str] = Body(default=None),
-        title_sel: Optional[str] = Body(default=None),
-        image_sel: Optional[str] = Body(default=None),
-        para_sel: Optional[str] = Body(default=None),
-    ):
-        s = slugify(slug)
-        db_rules_set(s, url_regex, list_selector, title_sel, image_sel, para_sel)
+    def rules_set(slug: str = Body(...), url_regex: Optional[str] = Body(default=None),
+                  list_selector: Optional[str] = Body(default=None),
+                  title_sel: Optional[str] = Body(default=None),
+                  image_sel: Optional[str] = Body(default=None),
+                  para_sel: Optional[str] = Body(default=None)):
+        s = slugify(slug); db_rules_set(s, url_regex, list_selector, title_sel, image_sel, para_sel)
         return {"ok": True, "slug": s}
-
     @app.delete("/rules/clear")
     def rules_clear(slug: str = Query(...)):
-        db_rules_clear(slugify(slug))
-        return {"ok": True}
+        db_rules_clear(slugify(slug)); return {"ok": True}
 
-    # ---- palavra-chave
+    # palavra-chave
     @app.post("/crawl")
-    async def crawl(
-        keywords: List[str] = Body(default=["brasil"]),
-        hours_max: int = Body(default=12),
-        require_h1: bool = Body(default=True),
-        require_image: bool = Body(default=False),
-    ):
+    async def crawl(keywords: List[str] = Body(default=["brasil"]),
+                    hours_max: int = Body(default=12),
+                    require_h1: bool = Body(default=True),
+                    require_image: bool = Body(default=False)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}
             for kw in keywords:
@@ -764,108 +670,82 @@ def create_app() -> FastAPI:
             return {"collected": res, "stats": stats}
 
     @app.post("/crawl_debug")
-    async def crawl_debug(
-        keywords: List[str] = Body(default=["brasil"]),
-        hours_max: int = Body(default=12),
-        require_h1: bool = Body(default=True),
-        require_image: bool = Body(default=False),
-    ):
+    async def crawl_debug(keywords: List[str] = Body(default=["brasil"]),
+                          hours_max: int = Body(default=12),
+                          require_h1: bool = Body(default=True),
+                          require_image: bool = Body(default=False)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-            all_details: Dict[str, Any] = {}
-            res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}
+            res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}; details_all={}
             for kw in keywords:
                 items, m, det = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=True)
-                slug = slugify(kw)
-                res[slug] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in items]
-                stats[slug] = m
-                all_details[slug] = det
-            return {"collected": res, "stats": stats, "details": all_details}
+                s = slugify(kw)
+                res[s] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in items]
+                stats[s] = m; details_all[s]=det
+            return {"collected": res, "stats": stats, "details": details_all}
 
-    # ---- listagem
+    # listagem
     @app.post("/crawl_site")
-    async def crawl_site(
-        url: str = Body(..., embed=True),
-        keyword: str = Body("geral", embed=True),
-        selector: Optional[str] = Body(default=None),
-        url_regex: Optional[str] = Body(default=None),
-        require_h1: bool = Body(default=True),
-        require_image: bool = Body(default=False),
-    ):
+    async def crawl_site(url: str = Body(..., embed=True),
+                         keyword: str = Body("geral", embed=True),
+                         selector: Optional[str] = Body(default=None),
+                         url_regex: Optional[str] = Body(default=None),
+                         require_h1: bool = Body(default=True),
+                         require_image: bool = Body(default=False)):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
         selector = selector or rule.get("list_selector")
         url_regex = url_regex or rule.get("url_regex")
-        sels_article = {
-            "title_sel": rule.get("title_sel"),
-            "image_sel": rule.get("image_sel"),
-            "para_sel":  rule.get("para_sel"),
-        }
+        sels = {"title_sel": rule.get("title_sel"), "image_sel": rule.get("image_sel"), "para_sel": rule.get("para_sel")}
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             items, m = await crawl_listing_once(client, url, keyword, selector, url_regex,
                                                 require_h1, require_image, want_debug=False,
-                                                selectors_article=sels_article)
+                                                selectors_article=sels)
             return {"ok": True, "found": len(items), "stats": m, "keyword": slug}
 
     @app.post("/crawl_site_debug")
-    async def crawl_site_debug(
-        url: str = Body(..., embed=True),
-        keyword: str = Body("geral", embed=True),
-        selector: Optional[str] = Body(default=None),
-        url_regex: Optional[str] = Body(default=None),
-        require_h1: bool = Body(default=True),
-        require_image: bool = Body(default=False),
-    ):
+    async def crawl_site_debug(url: str = Body(..., embed=True),
+                               keyword: str = Body("geral", embed=True),
+                               selector: Optional[str] = Body(default=None),
+                               url_regex: Optional[str] = Body(default=None),
+                               require_h1: bool = Body(default=True),
+                               require_image: bool = Body(default=False)):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
         selector = selector or rule.get("list_selector")
         url_regex = url_regex or rule.get("url_regex")
-        sels_article = {
-            "title_sel": rule.get("title_sel"),
-            "image_sel": rule.get("image_sel"),
-            "para_sel":  rule.get("para_sel"),
-        }
+        sels = {"title_sel": rule.get("title_sel"), "image_sel": rule.get("image_sel"), "para_sel": rule.get("para_sel")}
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             items, m, det = await crawl_listing_once(client, url, keyword, selector, url_regex,
                                                      require_h1, require_image, want_debug=True,
-                                                     selectors_article=sels_article)
+                                                     selectors_article=sels)
             return {"ok": True, "found": len(items), "stats": m, "details": det, "keyword": slug}
 
-    # ---- utilitários
+    # util
     @app.get("/debug_fetch")
     async def debug_fetch(url: str = Query(...)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             html, info = await fetch_html_ex(client, url)
-            sample = (html or "")[:400]
-            return JSONResponse({"info": info, "snippet": sample})
+            return JSONResponse({"info": info, "snippet": (html or "")[:400]})
 
     @app.post("/add")
-    async def add_link(
-        url: str = Body(..., embed=True),
-        keyword: str = Body("geral", embed=True),
-        require_h1: bool = Body(default=True),
-        require_image: bool = Body(default=False),
-    ):
+    async def add_link(url: str = Body(..., embed=True),
+                       keyword: str = Body("geral", embed=True),
+                       require_h1: bool = Body(default=True),
+                       require_image: bool = Body(default=False)):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
-        sels_article = {
-            "title_sel": rule.get("title_sel"),
-            "image_sel": rule.get("image_sel"),
-            "para_sel":  rule.get("para_sel"),
-        }
+        sels = {"title_sel": rule.get("title_sel"), "image_sel": rule.get("image_sel"), "para_sel": rule.get("para_sel")}
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-            res = await process_article(client, url, keyword, now_utc(), None, None,
-                                        require_h1=require_h1, require_img=require_image,
-                                        want_debug=False, selectors=sels_article)
-            if isinstance(res, tuple):
-                item, reason = res
-            else:
-                item, reason = None, "fetch_fail"
+            r = await process_article(client, url, keyword, now_utc(), None, None,
+                                      require_h1=require_h1, require_img=require_image,
+                                      want_debug=False, selectors=sels)
+            item, reason = r if isinstance(r, tuple) else (None, "fetch_fail")
             if not item:
                 raise HTTPException(status_code=400, detail=f"Não foi possível extrair conteúdo ({reason}).")
             db_upsert(item)
-            return {"id": item["id"], "title": item["title"],
-                    "permalink": f"/item/{item['id']}", "keyword": item["keyword"]}
+            return {"id": item["id"], "title": item["title"], "permalink": f"/item/{item['id']}", "keyword": item["keyword"]}
 
+    # APIs & páginas
     @app.get("/api/list")
     def api_list(keyword: str = Query(...), hours: int = Query(12, ge=1, le=72)):
         hours = max(5, hours)
@@ -884,7 +764,6 @@ def create_app() -> FastAPI:
         chan_title = f"News Automation — {keyword_slug}"
         chan_link = f"{base}/q/{keyword_slug}"
         chan_desc = f"Itens recentes para '{keyword_slug}' (últimas {hours}h)."
-
         parts = [
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
             "<rss version=\"2.0\"><channel>",
@@ -909,28 +788,20 @@ def create_app() -> FastAPI:
                 "</item>",
             ]
         parts.append("</channel></rss>")
-        xml = "\n".join(parts)
-        return Response(content=xml, media_type="application/rss+xml; charset=utf-8")
+        return Response(content="\n".join(parts), media_type="application/rss+xml; charset=utf-8")
 
     @app.get("/item/{id}", response_class=HTMLResponse)
     def view_item(id: str):
         it = db_get(id)
         if not it:
             return HTMLResponse("<h1>Não encontrado</h1>", status_code=404)
-        parts: List[str] = []
-        parts.append(
-            "<!doctype html><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
-            "<style>"
-            "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
-            "max-width:760px;margin:40px auto;padding:0 16px}"
-            "h1{line-height:1.25;margin:0 0 12px}"
-            "img{max-width:100%;height:auto;margin:16px 0;border-radius:6px}"
-            "p{line-height:1.7;font-size:1.06rem;margin:14px 0}"
-            "em a{color:#555;text-decoration:none}"
-            "</style>"
-        )
-        parts.append(f"<h1>{(it['title'] or 'Sem título')}</h1>")
+        parts = [
+            "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'/>",
+            "<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;max-width:760px;margin:40px auto;padding:0 16px}",
+            "h1{line-height:1.25;margin:0 0 12px}img{max-width:100%;height:auto;margin:16px 0;border-radius:6px}",
+            "p{line-height:1.7;font-size:1.06rem;margin:14px 0}em a{color:#555;text-decoration:none}</style>",
+            f"<h1>{(it['title'] or 'Sem título')}</h1>",
+        ]
         if it.get("image"): parts.append(f"<img src='{it['image']}' alt='imagem'>")
         for p in it.get("paragraphs", []): parts.append(f"<p>{p}</p>")
         parts.append(f"<p><em>Fonte: <a href='{it['url']}' rel='nofollow noopener' target='_blank'>Matéria Original</a></em></p>")
@@ -942,17 +813,12 @@ def create_app() -> FastAPI:
         rows = db_list_by_keyword(keyword_slug, since_hours=hours)
         if not rows:
             return HTMLResponse("<h1>Nada encontrado</h1><p>Use POST /crawl, /crawl_site ou /add.</p>", status_code=404)
-        parts: List[str] = []
-        parts.append(
-            "<!doctype html><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
-            "<style>"
-            "body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
-            "max-width:860px;margin:40px auto;padding:0 16px}"
-            "li{margin:10px 0}a{text-decoration:none}"
-            "</style>"
-        )
-        parts.append(f"<h1>Resultados: {keyword_slug}</h1><ul>")
+        parts = [
+            "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'/>",
+            "<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;max-width:860px;margin:40px auto;padding:0 16px}",
+            "li{margin:10px 0}a{text-decoration:none}</style>",
+            f"<h1>Resultados: {keyword_slug}</h1><ul>"
+        ]
         for r in rows: parts.append(f"<li><a href='/item/{r['id']}'>{r['title']}</a> — {r['source_name']}</li>")
         parts.append("</ul>")
         return HTMLResponse("".join(parts))
@@ -960,20 +826,11 @@ def create_app() -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     def root():
         idx = Path("static/index.html")
-        if idx.exists():
-            return HTMLResponse(idx.read_text(encoding="utf-8"))
-        return HTMLResponse(
-            "<p>UI não encontrada. Crie <code>static/index.html</code>. "
-            "Endpoints: <code>/crawl</code>, <code>/crawl_debug</code>, <code>/crawl_site</code>, <code>/crawl_site_debug</code>, "
-            "<code>/rules/get</code>, <code>/rules/set</code>, <code>/rules/clear</code>, "
-            "<code>/debug_fetch</code>, <code>/add</code>, <code>/api/list</code>, <code>/api/json/{slug}</code>, "
-            "<code>/rss/{slug}</code>, <code>/item/{id}</code>, <code>/q/{slug}</code>, <code>/healthz</code>.</p>"
-        )
+        if idx.exists(): return HTMLResponse(idx.read_text(encoding="utf-8"))
+        return HTMLResponse("<p>UI em <code>static/index.html</code>. Endpoints: /crawl, /crawl_site, /add, /rss/{slug}, /item/{id}, /q/{slug}, /healthz.</p>")
 
     return app
 
-
-# instancia para uvicorn/gunicorn
 app = create_app()
 
 if __name__ == "__main__":
