@@ -1,4 +1,6 @@
 # news_automation.py — coletor 24x7 com IA opcional (OpenRouter) + HOTFIX GNews
+# Agora aceita também GET para /crawl, /crawl_site e /add (evita 405 em cron GET)
+
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
@@ -88,7 +90,7 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
         r = await client.get(
             url, timeout=25.0, follow_redirects=True,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/2.0",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124 Safari/537.36 NewsAutomation/2.1",
                 "Accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
                 "Referer": "https://news.google.com/",
@@ -357,7 +359,7 @@ def google_news_rss(keyword: str, lang="pt-BR", region="BR") -> str:
 async def gdelt_links(client: httpx.AsyncClient, keyword: str, hours: int) -> List[str]:
     try:
         url = f"https://api.gdeltproject.org/api/v2/doc/doc?query={quote_plus(keyword)}&timespan={hours}h&format=json"
-        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/2.0"})
+        r = await client.get(url, timeout=20.0, headers={"User-Agent":"NewsAutomation/2.1"})
         if r.status_code != 200: return []
         js = r.json()
         return [a["url"] for a in js.get("articles", []) if a.get("url")]
@@ -491,7 +493,7 @@ async def crawl_keyword(client: httpx.AsyncClient, keyword: str, hours_max: int,
     # Google News
     try:
         r = await client.get(google_news_rss(keyword), timeout=20.0,
-                             headers={"User-Agent":"NewsAutomation/2.0"})
+                             headers={"User-Agent":"NewsAutomation/2.1"})
         if r.status_code == 200:
             feed = feedparser.parse(r.text)
             for e in feed.entries[:80]:
@@ -638,49 +640,39 @@ def create_app() -> FastAPI:
     def rules_clear(slug: str = Query(...)):
         db_rules_clear(slugify(slug)); return {"ok": True}
 
-    # Palavra-chave
+    # ===== Palavra-chave =====
     @app.post("/crawl")
-    async def crawl(keywords: List[str] = Body(default=["brasil"]),
-                    hours_max: int = Body(default=12),
-                    require_h1: bool = Body(default=True),
-                    require_image: bool = Body(default=False)):
+    async def crawl_post(keywords: List[str] = Body(default=["brasil"]),
+                         hours_max: int = Body(default=12),
+                         require_h1: bool = Body(default=True),
+                         require_image: bool = Body(default=False)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}
             for kw in keywords:
                 items, m = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=False)
-
-                # 🔧 HOTFIX 3 — dedupe por id na RESPOSTA (o banco já está ok)
-                by_id = {}
-                for it in items:
-                    by_id[it["id"]] = it
+                by_id = {it["id"]: it for it in items}  # dedupe resposta
                 clean_items = list(by_id.values())
-
                 res[slugify(kw)] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in clean_items]
                 stats[slugify(kw)] = m
             return {"collected": res, "stats": stats}
 
-    @app.post("/crawl_debug")
-    async def crawl_debug(keywords: List[str] = Body(default=["brasil"]),
-                          hours_max: int = Body(default=12),
-                          require_h1: bool = Body(default=True),
-                          require_image: bool = Body(default=False)):
-        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-            res: Dict[str, Any] = {}; stats: Dict[str, Any] = {}; details_all={}
-            for kw in keywords:
-                items, m, det = await crawl_keyword(client, kw, hours_max, require_h1, require_image, want_debug=True)
-                s = slugify(kw)
-                res[s] = [{"id":it["id"],"title":it["title"],"source":it["source_name"]} for it in items]
-                stats[s] = m; details_all[s]=det
-            return {"collected": res, "stats": stats, "details": details_all}
+    # GET compatível (para cron que só faz GET)
+    @app.get("/crawl")
+    async def crawl_get(keywords: str = Query("brasil"),
+                        hours_max: int = Query(12, ge=1, le=72),
+                        require_h1: bool = Query(True),
+                        require_image: bool = Query(False)):
+        kws = [k.strip() for k in keywords.split(",") if k.strip()]
+        return await crawl_post(kws, hours_max, require_h1, require_image)
 
-    # Listagem
+    # ===== Listagem =====
     @app.post("/crawl_site")
-    async def crawl_site(url: str = Body(..., embed=True),
-                         keyword: str = Body("geral", embed=True),
-                         selector: Optional[str] = Body(default=None),
-                         url_regex: Optional[str] = Body(default=None),
-                         require_h1: bool = Body(default=True),
-                         require_image: bool = Body(default=False)):
+    async def crawl_site_post(url: str = Body(..., embed=True),
+                              keyword: str = Body("geral", embed=True),
+                              selector: Optional[str] = Body(default=None),
+                              url_regex: Optional[str] = Body(default=None),
+                              require_h1: bool = Body(default=True),
+                              require_image: bool = Body(default=False)):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
         selector = selector or rule.get("list_selector")
@@ -692,36 +684,29 @@ def create_app() -> FastAPI:
                                                 selectors_article=sels)
             return {"ok": True, "found": len(items), "stats": m, "keyword": slug}
 
-    @app.post("/crawl_site_debug")
-    async def crawl_site_debug(url: str = Body(..., embed=True),
-                               keyword: str = Body("geral", embed=True),
-                               selector: Optional[str] = Body(default=None),
-                               url_regex: Optional[str] = Body(default=None),
-                               require_h1: bool = Body(default=True),
-                               require_image: bool = Body(default=False)):
-        slug = slugify(keyword)
-        rule = db_rules_get(slug) or {}
-        selector = selector or rule.get("list_selector")
-        url_regex = url_regex or rule.get("url_regex")
-        sels = {"title_sel": rule.get("title_sel"), "image_sel": rule.get("image_sel"), "para_sel": rule.get("para_sel")}
-        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
-            items, m, det = await crawl_listing_once(client, url, keyword, selector, url_regex,
-                                                     require_h1, require_image, want_debug=True,
-                                                     selectors_article=sels)
-            return {"ok": True, "found": len(items), "stats": m, "details": det, "keyword": slug}
+    # GET compatível
+    @app.get("/crawl_site")
+    async def crawl_site_get(url: str = Query(...),
+                             keyword: str = Query("geral"),
+                             selector: Optional[str] = Query(default=None),
+                             url_regex: Optional[str] = Query(default=None),
+                             require_h1: bool = Query(True),
+                             require_image: bool = Query(False)):
+        return await crawl_site_post(url, keyword, selector, url_regex, require_h1, require_image)
 
-    # Util
+    # ===== Util =====
     @app.get("/debug_fetch")
     async def debug_fetch(url: str = Query(...)):
         async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
             html, info = await fetch_html_ex(client, url)
             return JSONResponse({"info": info, "snippet": (html or "")[:400]})
 
+    # ===== Add link direto =====
     @app.post("/add")
-    async def add_link(url: str = Body(..., embed=True),
-                       keyword: str = Body("geral", embed=True),
-                       require_h1: bool = Body(default=True),
-                       require_image: bool = Body(default=False)):
+    async def add_link_post(url: str = Body(..., embed=True),
+                            keyword: str = Body("geral", embed=True),
+                            require_h1: bool = Body(default=True),
+                            require_image: bool = Body(default=False)):
         slug = slugify(keyword)
         rule = db_rules_get(slug) or {}
         sels = {"title_sel": rule.get("title_sel"), "image_sel": rule.get("image_sel"), "para_sel": rule.get("para_sel")}
@@ -735,7 +720,15 @@ def create_app() -> FastAPI:
             db_upsert(item)
             return {"id": item["id"], "title": item["title"], "permalink": f"/item/{item['id']}", "keyword": item["keyword"]}
 
-    # API & páginas
+    # GET compatível
+    @app.get("/add")
+    async def add_link_get(url: str = Query(...),
+                           keyword: str = Query("geral"),
+                           require_h1: bool = Query(True),
+                           require_image: bool = Query(False)):
+        return await add_link_post(url, keyword, require_h1, require_image)
+
+    # ===== APIs & páginas =====
     @app.get("/api/list")
     def api_list(keyword: str = Query(...), hours: int = Query(12, ge=1, le=72)):
         hours = max(5, hours)
@@ -802,7 +795,7 @@ def create_app() -> FastAPI:
         hours = max(5, hours)
         rows = db_list_by_keyword(keyword_slug, since_hours=hours)
         if not rows:
-            return HTMLResponse("<h1>Nada encontrado</h1><p>Use POST /crawl, /crawl_site ou /add.</p>", status_code=404)
+            return HTMLResponse("<h1>Nada encontrado</h1><p>Use /crawl, /crawl_site ou /add.</p>", status_code=404)
         parts = [
             "<!doctype html><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'/>",
             "<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;max-width:860px;margin:40px auto;padding:0 16px}",
