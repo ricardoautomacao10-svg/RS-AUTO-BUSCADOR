@@ -1,59 +1,169 @@
 <!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>News Automation</title>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>News Automation • Painel</title>
 <style>
-  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0b0f14;color:#e8eef6}
-  .wrap{max-width:980px;margin:30px auto;padding:0 16px}
-  h1{font-size:22px;margin:0 0 10px}
-  .card{background:#121a22;border:1px solid #1f2a36;border-radius:10px;padding:16px;margin:12px 0}
-  input,select,button{padding:10px;border-radius:8px;border:1px solid #2a3b4d;background:#0e141b;color:#e8eef6}
-  button{background:#16a34a;border:0;cursor:pointer}
-  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .mt{margin-top:8px}
-  a{color:#8ecaff}
-  table{width:100%;border-collapse:collapse;margin-top:10px}
-  td,th{border-bottom:1px solid #233243;padding:8px;font-size:14px}
-  .small{opacity:.8;font-size:12px}
+  :root { color-scheme: light dark; }
+  body{font-family:system-ui,Segoe UI,Roboto,Arial;max-width:920px;margin:32px auto;padding:0 16px}
+  h1{margin:0 0 16px}
+  fieldset{border:1px solid #8883;padding:12px;border-radius:10px;margin:14px 0}
+  label{display:block;margin:8px 0 4px}
+  input[type=text]{width:100%;padding:10px;border-radius:8px;border:1px solid #8885}
+  button{padding:10px 14px;border-radius:10px;border:0;background:#0b5cff;color:#fff;cursor:pointer}
+  button.secondary{background:#444}
+  pre{white-space:pre-wrap;background:#0002;padding:10px;border-radius:8px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+  .row > * {flex:1 1 240px}
+  .links a{margin-right:10px}
+  .small{opacity:.8;font-size:.92em}
+  .ok{color:#0a7a39}
+  .bad{color:#a31515}
 </style>
-<div class="wrap">
-  <h1>📰 News Automation</h1>
-  <div class="card">
-    <div class="row">
-      <input id="kw" placeholder="Palavra-chave" value="Litoral Norte de São Paulo" style="flex:1">
-      <select id="hours">
-        <option value="5">Últimas 5h</option>
-        <option value="8">Últimas 8h</option>
-        <option value="12" selected>Últimas 12h</option>
-        <option value="24">Últimas 24h</option>
-      </select>
-      <label><input type="checkbox" id="h1" checked> Exigir H1/título</label>
-      <label><input type="checkbox" id="img" checked> Exigir imagem</label>
-      <button id="go">Coletar agora</button>
+<h1>News Automation — Painel</h1>
+
+<fieldset>
+  <legend>Coletar por palavra-chave</legend>
+  <div class="row">
+    <div>
+      <label>Palavras-chave (separe por vírgula)</label>
+      <input id="kw" type="text" value="Litoral Norte de São Paulo, Ilhabela" />
     </div>
-    <div class="row mt small">
-      Links: <a id="rss" href="#" target="_blank">RSS</a> — <a id="json" href="#" target="_blank">JSON</a>
+    <div>
+      <label>Janela (horas)</label>
+      <input id="hours" type="text" value="12" />
     </div>
-    <div id="out" class="mt small">OK. Use também /crawl_site para páginas de listagem.</div>
+    <div>
+      <label>&nbsp;</label>
+      <button onclick="doCrawl()">Coletar agora</button>
+    </div>
   </div>
-</div>
+  <label><input id="reqh1" type="checkbox" checked> Exigir título</label>
+  <label><input id="reqimg" type="checkbox"> Exigir imagem</label>
+  <label><input id="debug" type="checkbox"> Debug</label>
+  <div id="result1" class="small"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Coletar de listagem (ex.: Ilhabela)</legend>
+  <div class="row">
+    <div>
+      <label>URL da listagem</label>
+      <input id="listurl" type="text" value="https://www.ilhabela.sp.gov.br/portal/noticias/3" />
+    </div>
+    <div>
+      <label>Slug/keyword</label>
+      <input id="listslug" type="text" value="litoral-norte-de-sao-paulo" />
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button onclick="doCrawlSite()">Coletar listagem</button>
+    </div>
+  </div>
+  <div id="result2" class="small"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Links rápidos</legend>
+  <div class="links small">
+    <a id="rss" href="/rss/litoral-norte-de-sao-paulo" target="_blank">RSS (litoral-norte-de-sao-paulo)</a>
+    <a id="json" href="/api/json/litoral-norte-de-sao-paulo" target="_blank">JSON (litoral-norte-de-sao-paulo)</a>
+    <a href="/healthz" target="_blank">/healthz</a>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>Adicionar link direto</legend>
+  <div class="row">
+    <div>
+      <label>URL da matéria</label>
+      <input id="addurl" type="text" placeholder="https://..." />
+    </div>
+    <div>
+      <label>Keyword (slug)</label>
+      <input id="addslug" type="text" value="litoral-norte-de-sao-paulo" />
+    </div>
+    <div>
+      <label>&nbsp;</label>
+      <button onclick="doAdd()">Adicionar</button>
+    </div>
+  </div>
+  <div id="result3" class="small"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Regras por slug (opcional)</legend>
+  <div class="row">
+    <div>
+      <label>Slug</label>
+      <input id="rslug" type="text" value="litoral-norte-de-sao-paulo" />
+    </div>
+    <div>
+      <label>URL regex (ex.: ^https?://.../portal/noticias/0/3/\\d+/)</label>
+      <input id="rregex" type="text" value="^https?://(?:www\\.)?ilhabela\\.sp\\.gov\\.br/portal/noticias/0/3/\\d+/" />
+    </div>
+  </div>
+  <div class="row">
+    <div><label>List selector (CSS)</label><input id="rlist" type="text" placeholder=".lista a" /></div>
+    <div><label>Title selector</label><input id="rtitle" type="text" placeholder="h1.titulo" /></div>
+    <div><label>Image selector</label><input id="rimg" type="text" placeholder='meta[property="og:image"]' /></div>
+    <div><label>Paragraph selector</label><input id="rpara" type="text" placeholder=".conteudo p" /></div>
+  </div>
+  <div class="row">
+    <button onclick="saveRules()">Salvar regras</button>
+    <button class="secondary" onclick="clearRules()">Limpar regras</button>
+    <div id="rmsg" class="small"></div>
+  </div>
+</fieldset>
+
+<pre id="log"></pre>
+
 <script>
-const base = location.origin;
-const $ = sel => document.querySelector(sel);
-function updateLinks(){
-  const slug = ($('#kw').value||'').toLowerCase().trim().replace(/\s+/g,'-').replace(/[^a-z0-9\-]/g,'');
-  const h = $('#hours').value||12;
-  $('#rss').href = `${base}/rss/${slug}?hours=${h}`;
-  $('#json').href = `${base}/api/json/${slug}?hours=${h}`;
-}
-updateLinks();
-['kw','hours'].forEach(id => $('#'+id).addEventListener('input', updateLinks));
-$('#go').onclick = async () => {
-  $('#out').textContent = 'Coletando...';
-  const kw = $('#kw').value.trim(); const h1 = $('#h1').checked; const img = $('#img').checked;
-  const body = {keywords:[kw], hours_max:12, require_h1:h1, require_image:img};
+async function doCrawl(){
+  const kw = document.getElementById('kw').value;
+  const hours = parseInt(document.getElementById('hours').value||'12',10);
+  const reqh1 = document.getElementById('reqh1').checked;
+  const reqimg = document.getElementById('reqimg').checked;
+  const debug = document.getElementById('debug').checked;
+  const body = { keywords: kw.split(',').map(s=>s.trim()).filter(Boolean), hours_max: hours, require_h1:reqh1, require_image:reqimg, debug };
   const r = await fetch('/crawl', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  const js = await r.json().catch(()=>({}));
-  $('#out').textContent = JSON.stringify(js, null, 2);
-};
+  const js = await r.json();
+  document.getElementById('result1').innerHTML = '<span class="ok">OK</span> — ' + JSON.stringify(js.stats);
+  document.getElementById('log').textContent = JSON.stringify(js, null, 2);
+}
+async function doCrawlSite(){
+  const url = document.getElementById('listurl').value;
+  const slug = document.getElementById('listslug').value;
+  const r = await fetch('/crawl_site', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, keyword: slug})});
+  const js = await r.json();
+  document.getElementById('result2').innerHTML = (js.ok?'<span class="ok">OK</span>':'<span class="bad">ERRO</span>') + ' — encontrados: ' + (js.found||0);
+  document.getElementById('rss').href = '/rss/' + slug;
+  document.getElementById('json').href = '/api/json/' + slug;
+  document.getElementById('log').textContent = JSON.stringify(js, null, 2);
+}
+async function doAdd(){
+  const url = document.getElementById('addurl').value;
+  const keyword = document.getElementById('addslug').value;
+  const r = await fetch('/add?url=' + encodeURIComponent(url) + '&keyword=' + encodeURIComponent(keyword));
+  const js = await r.json();
+  document.getElementById('result3').innerHTML = '<span class="ok">OK</span> — <a href="'+('/item/'+js.id)+'" target="_blank">ver item</a>';
+  document.getElementById('log').textContent = JSON.stringify(js, null, 2);
+}
+async function saveRules(){
+  const slug = document.getElementById('rslug').value;
+  const url_regex = document.getElementById('rregex').value || null;
+  const list_selector = document.getElementById('rlist').value || null;
+  const title_sel = document.getElementById('rtitle').value || null;
+  const image_sel = document.getElementById('rimg').value || null;
+  const para_sel = document.getElementById('rpara').value || null;
+  const r = await fetch('/rules/set', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({slug, url_regex, list_selector, title_sel, image_sel, para_sel})});
+  const js = await r.json();
+  document.getElementById('rmsg').textContent = 'Regras salvas para ' + js.slug;
+}
+async function clearRules(){
+  const slug = document.getElementById('rslug').value;
+  const r = await fetch('/rules/clear?slug='+encodeURIComponent(slug), {method:'DELETE'});
+  const js = await r.json();
+  document.getElementById('rmsg').textContent = 'Regras limpas';
+}
 </script>
