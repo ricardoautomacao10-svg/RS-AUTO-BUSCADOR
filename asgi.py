@@ -1,8 +1,6 @@
 # asgi.py — inicializador robusto para o Render
 try:
-    # se o módulo já expõe "app", usa direto
-    from news_automation import app as app  # noqa: F401
+    from news_automation import app as app  # se o módulo já expõe "app"
 except Exception:
-    # fallback: cria a app chamando create_app()
-    from news_automation import create_app  # type: ignore
+    from news_automation import create_app   # fallback
     app = create_app()
