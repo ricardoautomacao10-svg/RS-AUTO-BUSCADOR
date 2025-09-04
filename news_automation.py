@@ -1,11 +1,10 @@
 # news_automation.py — coletor 24x7 com IA opcional (OpenRouter) + HOTFIX GNews
-# Agora aceita também GET para /crawl, /crawl_site e /add (evita 405 em cron GET)
+# Agora também responde GET / com 200 OK (evita 405 no health-check)
 
 import os, re, json, base64, hashlib, sqlite3, asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
-from pathlib import Path
 from html import escape
 
 import feedparser
@@ -620,6 +619,27 @@ def create_app() -> FastAPI:
 
     @app.head("/")
     def root_head(): return Response(status_code=200)
+
+    @app.get("/", response_class=HTMLResponse)
+    def root_get():
+        return HTMLResponse(
+            "<!doctype html><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width,initial-scale=1'/>"
+            "<style>body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;"
+            "background:#0b0f14;color:#e8eef6;max-width:820px;margin:40px auto;padding:0 16px}"
+            "a{color:#8ecaff}</style>"
+            "<h1>News Automation</h1>"
+            "<p>OK. Endpoints úteis:</p>"
+            "<ul>"
+            "<li>POST/GET <code>/crawl</code></li>"
+            "<li>POST/GET <code>/crawl_site</code></li>"
+            "<li>POST/GET <code>/add</code></li>"
+            "<li>GET <code>/rss/&lt;slug&gt;</code></li>"
+            "<li>GET <code>/api/json/&lt;slug&gt;</code></li>"
+            "<li>GET <code>/cron/run</code></li>"
+            "</ul>"
+            "<p>Se você tiver <code>static/index.html</code>, acesse <a href='/static/index.html'>painel</a>.</p>"
+        )
 
     @app.get("/healthz")
     def healthz(): return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
