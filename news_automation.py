@@ -655,6 +655,37 @@ def create_app() -> FastAPI:
     def rules_clear(slug: str = Query(...)):
         db_rules_clear(slugify(slug)); return {"ok": True}
 
+    @app.get("/cron/run")
+    async def cron_run(
+        token: Optional[str] = Query(default=None),
+        keywords: str = Query(default="Litoral Norte de São Paulo,Ilhabela"),
+        list_urls: str = Query(default="https://www.ilhabela.sp.gov.br/portal/noticias/3"),
+    ):
+        # segurança opcional via token
+        secret = os.getenv("CRON_SECRET")
+        if secret and token != secret:
+            raise HTTPException(status_code=401, detail="invalid token")
+
+        ks = [k.strip() for k in keywords.split(",") if k.strip()]
+        lus = [u.strip() for u in list_urls.split(",") if u.strip()]
+        results = {"crawl": {}, "crawl_site": []}
+
+        async with httpx.AsyncClient(follow_redirects=True, http2=False) as client:
+            # palavra-chave
+            for kw in ks:
+                items, m = await crawl_keyword(client, kw, 12, True, True, want_debug=False)
+                results["crawl"][kw] = {"ok": m.get("ok", 0)}
+
+            # listagens
+            for u in lus:
+                items, m = await crawl_listing_once(client, u, "litoral-norte-de-sao-paulo",
+                                                    selector=None, url_regex=None,
+                                                    require_h1=True, require_img=False,
+                                                    want_debug=False, selectors_article=None)
+                results["crawl_site"].append({"url": u, "ok": m.get("ok", 0)})
+
+        return {"ok": True, "ran_at": iso(now_utc()), "results": results}
+  
     # palavra-chave
     @app.post("/crawl")
     async def crawl(keywords: List[str] = Body(default=["brasil"]),
@@ -836,3 +867,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT","8000")))
+
