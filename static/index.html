@@ -1,308 +1,59 @@
 <!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>News Automation — Painel</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>News Automation</title>
 <style>
-  :root{--bg:#0b0d10;--card:#12151a;--muted:#9aa4b2;--text:#e6ebf2;--acc:#4da3ff;--border:#1f2630}
-  *{box-sizing:border-box} body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0d1117;color:var(--text)}
-  .wrap{max-width:1160px;margin:24px auto;padding:0 16px}
-  header{display:flex;gap:16px;align-items:center;justify-content:space-between;margin:12px 0 20px}
-  .muted{color:var(--muted)} .brand{font-weight:700}
-  .grid{display:grid;grid-template-columns:1fr;gap:16px}
-  @media(min-width:1024px){.grid{grid-template-columns:1.1fr .9fr}}
-  .card{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:16px}
-  .row{display:flex;gap:10px;flex-wrap:wrap}
-  input,button,select{border:1px solid var(--border);background:#0f1318;color:#e6ebf2;border-radius:10px;padding:10px 12px;font-size:15px}
-  button{cursor:pointer;border:0;background:var(--acc);color:#07131f;font-weight:700}
-  button.secondary{background:#1f2937;color:#e5eef9;border:1px solid var(--border)}
-  .results{margin-top:10px;display:grid;grid-template-columns:1fr;gap:14px}
-  @media(min-width:720px){.results{grid-template-columns:1fr 1fr}}
-  .news{background:#0f1318;border:1px solid var(--border);border-radius:12px;overflow:hidden}
-  .img-wrap{height:170px;background:#0b0e12;display:flex;align-items:center;justify-content:center}
-  .news img{width:100%;height:100%;object-fit:cover}.cnt{padding:12px 12px 14px}
-  .title{font-weight:700;line-height:1.2;margin:0 0 8px}
-  .badge{display:inline-block;font-size:12px;color:#c8d3e1;background:#122233;border:1px solid #1b3049;padding:2px 8px;border-radius:999px}
-  .status{font-size:14px;color:var(--muted)}
-  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
-  th,td{border:1px solid var(--border);padding:6px 8px;text-align:left}
-  th{background:#0f141a}.ok{color:#22c55e}.fail{color:#ef4444}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,Helvetica,Ubuntu;background:#0b0f14;color:#e8eef6}
+  .wrap{max-width:980px;margin:30px auto;padding:0 16px}
+  h1{font-size:22px;margin:0 0 10px}
+  .card{background:#121a22;border:1px solid #1f2a36;border-radius:10px;padding:16px;margin:12px 0}
+  input,select,button{padding:10px;border-radius:8px;border:1px solid #2a3b4d;background:#0e141b;color:#e8eef6}
+  button{background:#16a34a;border:0;cursor:pointer}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .mt{margin-top:8px}
+  a{color:#8ecaff}
+  table{width:100%;border-collapse:collapse;margin-top:10px}
+  td,th{border-bottom:1px solid #233243;padding:8px;font-size:14px}
+  .small{opacity:.8;font-size:12px}
 </style>
-</head>
-<body>
 <div class="wrap">
-  <header>
-    <div>
-      <div class="brand">🗞️ News Automation</div>
-      <div class="muted">Coletor por palavra-chave, link direto, listagem e regras por slug. Exporta RSS/JSON.</div>
-    </div>
-    <a class="badge" href="/healthz" target="_blank">/healthz</a>
-  </header>
-
-  <div class="grid">
-    <div class="card">
-      <h3>Buscar por palavras-chave</h3>
-      <div class="row">
-        <input id="kw" placeholder="Ex.: ilhabela, brasil, economia" style="flex:1" />
-        <select id="hours">
-  <option value="5">Últimas 5h</option>
-  <option value="12" selected>Últimas 12h</option>
-  <option value="8">Últimas 8h</option>
-  <option value="6">Últimas 6h</option>
-  <option value="24">Últimas 24h</option>
-</select>
-
-        <button id="btnCrawl">Coletar agora</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <label><input type="checkbox" id="reqH1" checked> Exigir H1/título</label>
-        <label><input type="checkbox" id="reqImg"> Exigir imagem</label>
-        <label><input type="checkbox" id="dbg"> Debug</label>
-        <span style="flex:1"></span>
-        <input id="kwLive" placeholder="Listar: slug/palavra" style="flex:1;max-width:380px" />
-        <button class="secondary" id="btnList">Listar</button>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <span class="muted">Links do slug:</span>
-        <a class="badge" id="lnkRss" target="_blank">RSS</a>
-        <a class="badge" id="lnkJson" target="_blank">JSON</a>
-      </div>
-      <div class="status" id="status"></div>
-      <div id="debugBox"></div>
-    </div>
-
-    <div class="card">
-      <h3>Adicionar link específico</h3>
-      <div class="row"><input id="linkUrl" placeholder="https://site.com/noticia (ou l.facebook.com/l.php?u=...)" style="flex:1" /></div>
-      <div class="row" style="margin-top:8px">
-        <input id="linkKw" placeholder="Palavra-chave (ex.: meu-topico)" />
-        <button class="secondary" id="btnAdd">Adicionar</button>
-      </div>
-      <div class="status" id="statusAdd"></div>
-    </div>
-  </div>
-
-  <div class="card" style="margin-top:16px">
-    <h3>Raspar página de <em>listagem</em></h3>
+  <h1>📰 News Automation</h1>
+  <div class="card">
     <div class="row">
-      <input id="siteUrl" placeholder="https://www.ilhabela.sp.gov.br/portal/noticias/3" style="flex:1" />
+      <input id="kw" placeholder="Palavra-chave" value="Ilhabela" style="flex:1">
+      <select id="hours">
+        <option value="5">Últimas 5h</option>
+        <option value="8">Últimas 8h</option>
+        <option value="12" selected>Últimas 12h</option>
+        <option value="24">Últimas 24h</option>
+      </select>
+      <label><input type="checkbox" id="h1" checked> Exigir H1/título</label>
+      <label><input type="checkbox" id="img" checked> Exigir imagem</label>
+      <button id="go">Coletar agora</button>
     </div>
-    <div class="row" style="margin-top:8px">
-      <input id="siteKw" placeholder="Slug (ex.: ilhabela)" />
-      <input id="siteSel" placeholder="Seletor CSS opcional (ex.: .lista a)" style="flex:1" />
-      <input id="siteRe" placeholder="Regex opcional (ex.: /portal/noticias/\\d+)" style="flex:1" />
-      <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" id="siteDbg"> Debug</label>
-      <button id="btnSite" class="secondary">Raspar listagem</button>
+    <div class="row mt small">
+      Links: <a id="rss" href="#" target="_blank">RSS</a> — <a id="json" href="#" target="_blank">JSON</a>
     </div>
-    <div class="status" id="statusSite"></div>
-    <div id="debugBoxSite"></div>
+    <div id="out" class="mt small">OK. Use também /crawl_site para páginas de listagem.</div>
   </div>
-
-  <div class="card" style="margin-top:16px">
-    <h3>Regras por slug (persistentes)</h3>
-    <div class="row">
-      <input id="ruleSlug" placeholder="Slug (ex.: ilhabela)" />
-      <button id="btnLoadRule" class="secondary">Carregar</button>
-      <button id="btnClearRule" class="secondary">Limpar</button>
-    </div>
-    <div class="row" style="margin-top:8px">
-      <input id="ruleRegex" placeholder="Regex de URL das matérias (ex.: /portal/noticias/\\d+)" style="flex:1" />
-      <input id="ruleListSel" placeholder="Seletor CSS da listagem (opcional, ex.: .lista-noticias a)" style="flex:1" />
-    </div>
-    <div class="row" style="margin-top:8px">
-      <input id="ruleTitleSel" placeholder="Seletor CSS do TÍTULO (opcional, ex.: h1.titulo)" style="flex:1" />
-      <input id="ruleImgSel" placeholder="Seletor CSS da IMAGEM (opcional, ex.: meta[property='og:image'])" style="flex:1" />
-      <input id="ruleParaSel" placeholder="Seletor CSS dos PARÁGRAFOS (opcional, ex.: .conteudo p)" style="flex:1" />
-    </div>
-    <div class="row" style="margin-top:8px">
-      <button id="btnSaveRule">Salvar regras do slug</button>
-    </div>
-    <div class="status" id="statusRule"></div>
-  </div>
-
-  <div style="margin:18px 0 8px" class="muted">Resultados</div>
-  <div class="results" id="results"></div>
 </div>
-
 <script>
-const $ = s => document.querySelector(s);
-const fmtDate = iso => iso ? new Date(iso).toLocaleString("pt-BR",{dateStyle:"short",timeStyle:"short"}) : "";
-const slugify = s => s.toLowerCase().normalize("NFD").replace(/\p{Diacritic}/gu,"").replace(/\s+/g,"-").replace(/[^a-z0-9\-]/g,"");
-
-function card(it){
-  const hrefItem = `/item/${it.id}`;
-  const src = it.image || "";
-  const srcName = it.source_name || "";
-  const title = it.title || "(sem título)";
-  const pub = fmtDate(it.published_at);
-  const created = fmtDate(it.created_at);
-  return `<div class="news">
-    <div class="img-wrap">${src?`<img src="${src}" alt="">`:`<div class="muted">sem imagem</div>`}</div>
-    <div class="cnt">
-      <div class="title"><a href="${hrefItem}" target="_blank" rel="noopener">${title}</a></div>
-      <div class="muted" style="font-size:13px">${srcName}${pub?" • "+pub:""}</div>
-      <div style="margin-top:6px"><a class="badge" href="${hrefItem}" target="_blank">Ver Limpinho</a></div>
-      <div class="muted" style="font-size:12px;margin-top:6px">coletado: ${created||"-"}</div>
-    </div>
-  </div>`;
+const base = location.origin;
+const $ = sel => document.querySelector(sel);
+function updateLinks(){
+  const slug = ($('#kw').value||'').toLowerCase().trim().replace(/\s+/g,'-').replace(/[^a-z0-9\-]/g,'');
+  const h = $('#hours').value||12;
+  $('#rss').href = `${base}/rss/${slug}?hours=${h}`;
+  $('#json').href = `${base}/api/json/${slug}?hours=${h}`;
 }
-async function apiList(keyword, hours){
-  const r = await fetch(`/api/list?keyword=${encodeURIComponent(keyword)}&hours=${hours}`);
-  if(!r.ok) throw new Error("Erro ao listar"); const d = await r.json(); return d.items||[];
-}
-async function crawlApi(keywords, hours, require_h1, require_image, debugMode){
-  const url = debugMode ? "/crawl_debug" : "/crawl";
-  const r = await fetch(url, {
-    method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ keywords, hours_max: hours, require_h1, require_image })
-  });
-  if(!r.ok) throw new Error(await r.text()); return r.json();
-}
-async function addLink(url, keyword, require_h1, require_image){
-  const r = await fetch("/add", {
-    method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ url, keyword, require_h1, require_image })
-  });
-  if(!r.ok) throw new Error(await r.text()); return r.json();
-}
-async function crawlSite(url, keyword, selector, urlRegex, require_h1, require_image, debug){
-  const ep = debug ? "/crawl_site_debug" : "/crawl_site";
-  const r = await fetch(ep, {
-    method:"POST", headers:{ "Content-Type":"application/json" },
-    body: JSON.stringify({ url, keyword, selector, url_regex: urlRegex, require_h1, require_image })
-  });
-  if(!r.ok) throw new Error(await r.text()); return r.json();
-}
-async function rulesGet(slug){
-  const r = await fetch(`/rules/get?slug=${encodeURIComponent(slug)}`);
-  if(!r.ok) throw new Error(await r.text()); return r.json();
-}
-async function rulesSet(data){
-  const r = await fetch("/rules/set", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(data) });
-  if(!r.ok) throw new Error(await r.text()); return r.json();
-}
-async function rulesClear(slug){
-  const r = await fetch(`/rules/clear?slug=${encodeURIComponent(slug)}`, { method:"DELETE" });
-  if(!r.ok) throw new Error(await r.text()); return r.json();
-}
-
-function render(items){ $("#results").innerHTML = (items&&items.length)? items.map(card).join("") : `<div class="muted">Sem resultados para exibir.</div>`; }
-function updateExportLinks(slug){ $("#lnkRss").href=`/rss/${slug}`; $("#lnkJson").href=`/api/json/${slug}`; }
-function renderDebugTable(arr, boxId){
-  const box = $(boxId);
-  if(!arr || !arr.length){ box.innerHTML = ""; return; }
-  let rows = arr.map(d=>{
-    const f = d.fetch||{};
-    const st = d.decision==="ok" ? `<span class="ok">OK</span>` : `<span class="fail">${d.decision||"?"}</span>`;
-    const h1 = d.title_found!==undefined ? (d.title_found?"sim":"não") : "-";
-    const img = d.image_found!==undefined ? (d.image_found?"sim":"não") : "-";
-    const p = d.p_count!==undefined ? (d.p_count||0) : "-";
-    const http = f.status? `${f.status} ${f.ctype||""}` : "-";
-    const url = (f.final_url||d.link||"");
-    return `<tr>
-      <td>${st}</td><td>${http}</td><td>${h1}</td><td>${img}</td><td>${p}</td>
-      <td style="max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-        ${url?`<a href="${url}" target="_blank" rel="noopener">${url}</a>`:""}
-      </td>
-    </tr>`;
-  }).join("");
-  box.innerHTML = `<table>
-    <thead><tr><th>Status</th><th>HTTP/Tipo</th><th>H1</th><th>Img</th><th>P</th><th>URL final</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`;
-}
-
-$("#btnCrawl").onclick = async () => {
-  const raw = $("#kw").value.trim(); if(!raw) return alert("Digite palavras-chave (separe por vírgula)");
-  const hours = Number($("#hours").value||12);
-  const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked; const debug=$("#dbg").checked;
-  const kws = raw.split(",").map(s=>s.trim()).filter(Boolean);
-  const firstSlug = slugify(kws[0]); $("#kwLive").value = firstSlug; updateExportLinks(firstSlug);
-  $("#status").textContent = "Coletando…"; $("#debugBox").innerHTML = "";
-  try{
-    const data = await crawlApi(kws, hours, reqH1, reqImg, debug);
-    const stats = data.stats[firstSlug] || {};
-    const items = await apiList(firstSlug, hours);
-    render(items);
-    $("#status").innerHTML = `OK. Mostrando: <b>${firstSlug}</b> (janela ${hours}h). `+
-      `Passaram: <b>${stats.ok||0}</b> • Descartes — H1: <b>${stats.no_h1||0}</b>, Img: <b>${stats.no_image||0}</b>, P: <b>${stats.no_paragraphs||0}</b>, Fetch: <b>${stats.fetch_fail||0}</b>`;
-    if(data.details && data.details[firstSlug]) renderDebugTable(data.details[firstSlug], "#debugBox");
-  }catch(e){ $("#status").textContent = "Erro: "+e.message; }
-};
-
-$("#btnList").onclick = async () => {
-  const kw = $("#kwLive").value.trim(); if(!kw) return alert("Informe o slug para listar");
-  const hours = Number($("#hours").value||12);
-  try{ const items = await apiList(kw, hours); render(items); updateExportLinks(kw); $("#status").innerHTML = `Listando: <b>${kw}</b> (últimas ${hours}h)`; }
-  catch(e){ $("#status").textContent = "Erro: "+e.message; }
-};
-
-$("#btnAdd").onclick = async () => {
-  const url = $("#linkUrl").value.trim(); if(!url) return alert("Cole o link");
-  const kw = ($("#linkKw").value.trim()) || "geral";
-  const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked;
-  $("#statusAdd").textContent = "Adicionando…";
-  try{
-    await addLink(url, kw, reqH1, reqImg);
-    const slug = slugify(kw); const hours = Number($("#hours").value||12);
-    const items = await apiList(slug, hours);
-    render(items); $("#kwLive").value = slug; updateExportLinks(slug);
-    $("#statusAdd").textContent = "Link adicionado.";
-  }catch(e){ $("#statusAdd").textContent = "Erro: "+e.message; }
-};
-
-$("#btnSite").onclick = async () => {
-  const url = $("#siteUrl").value.trim(); if(!url) return alert("Cole a URL da listagem");
-  const kw = ($("#siteKw").value.trim()) || "geral";
-  const selector = $("#siteSel").value.trim() || null;
-  const urlRegex = $("#siteRe").value.trim() || null;
-  const reqH1=$("#reqH1").checked; const reqImg=$("#reqImg").checked; const debug=$("#siteDbg").checked;
-  $("#statusSite").textContent = "Raspando listagem…"; $("#debugBoxSite").innerHTML = "";
-  try{
-    const data = await crawlSite(url, kw, selector, urlRegex, reqH1, reqImg, debug);
-    const slug = slugify(kw); const hours = Number($("#hours").value||12);
-    const items = await apiList(slug, hours);
-    render(items); $("#kwLive").value = slug; updateExportLinks(slug);
-    $("#statusSite").innerHTML = `OK. Encontrados: <b>${data.found||0}</b> • Stats — Passaram: <b>${(data.stats||{}).ok||0}</b>, Descartes: H1 <b>${(data.stats||{}).no_h1||0}</b>, Img <b>${(data.stats||{}).no_image||0}</b>, P <b>${(data.stats||{}).no_paragraphs||0}</b>, Fetch <b>${(data.stats||{}).fetch_fail||0}</b>`;
-    if(data.details) renderDebugTable(data.details, "#debugBoxSite");
-  }catch(e){ $("#statusSite").textContent = "Erro: "+e.message; }
-};
-
-/* Regras por slug */
-$("#btnLoadRule").onclick = async ()=>{
-  const slug = slugify($("#ruleSlug").value.trim()); if(!slug) return alert("Informe o slug");
-  $("#statusRule").textContent = "Carregando…";
-  try{
-    const r = await rulesGet(slug);
-    $("#ruleRegex").value   = r.url_regex || "";
-    $("#ruleListSel").value = r.list_selector || "";
-    $("#ruleTitleSel").value= r.title_sel || "";
-    $("#ruleImgSel").value  = r.image_sel || "";
-    $("#ruleParaSel").value = r.para_sel || "";
-    $("#statusRule").textContent = "Regras carregadas.";
-  }catch(e){ $("#statusRule").textContent = "Erro: "+e.message; }
-};
-$("#btnSaveRule").onclick = async ()=>{
-  const slug = slugify($("#ruleSlug").value.trim()); if(!slug) return alert("Informe o slug");
-  const data = {
-    slug,
-    url_regex: $("#ruleRegex").value.trim() || null,
-    list_selector: $("#ruleListSel").value.trim() || null,
-    title_sel: $("#ruleTitleSel").value.trim() || null,
-    image_sel: $("#ruleImgSel").value.trim() || null,
-    para_sel: $("#ruleParaSel").value.trim() || null,
-  };
-  $("#statusRule").textContent = "Salvando…";
-  try{ await rulesSet(data); $("#statusRule").textContent = "Regras salvas."; }
-  catch(e){ $("#statusRule").textContent = "Erro: "+e.message; }
-};
-$("#btnClearRule").onclick = async ()=>{
-  const slug = slugify($("#ruleSlug").value.trim()); if(!slug) return alert("Informe o slug");
-  if(!confirm("Apagar regras do slug?")) return;
-  try{ await rulesClear(slug); $("#statusRule").textContent = "Regras apagadas."; }
-  catch(e){ $("#statusRule").textContent = "Erro: "+e.message; }
+updateLinks();
+['kw','hours'].forEach(id => $('#'+id).addEventListener('input', updateLinks));
+$('#go').onclick = async () => {
+  $('#out').textContent = 'Coletando...';
+  const kw = $('#kw').value.trim(); const h1 = $('#h1').checked; const img = $('#img').checked;
+  const body = {keywords:[kw], hours_max:12, require_h1:h1, require_image:img};
+  const r = await fetch('/crawl', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  const js = await r.json().catch(()=>({}));
+  $('#out').textContent = JSON.stringify(js, null, 2);
 };
 </script>
-</body>
-</html>
