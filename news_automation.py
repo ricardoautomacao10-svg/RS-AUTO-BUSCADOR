@@ -25,20 +25,27 @@
 #   DEFAULT_LIST_URLS="https://www.ilhabela.sp.gov.br/portal/noticias/3"
 #   HOURS_MAX=12
 #   REQUIRE_H1=true
-#   REQUIRE_IMAGE=true             # <— mudei o padrão pra true, pois você quer imagem obrigatória
+#   REQUIRE_IMAGE=true             # <- padrão true
 #   CRON_INTERVAL_MIN=15
 #   DISABLE_BACKGROUND=0
-#   REWRITE_WITH_AI=0              # 1 para reescrever com OpenRouter (ai_rewriter.py)
-#   OPENROUTER_API_KEY=...         # se REWRITE_WITH_AI=1
-#   FACEBOOK_ACCESS_TOKEN=...      # se for usar /crawl_fb ou fb_page no refresh do RSS
+#   REWRITE_WITH_AI=1              # <--- Ativa reescrita IA
+#   OPENROUTER_API_KEY="sua-chave-openrouter-aqui"
+#   FACEBOOK_ACCESS_TOKEN=...      # se usar /crawl_fb ou fb_page
 #
-import os, re, json, base64, hashlib, sqlite3, asyncio
+import os
+import re
+import json
+import base64
+import hashlib
+import sqlite3
+import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
 from html import escape
 
-import httpx, feedparser
+import httpx
+import feedparser
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, Response, JSONResponse, RedirectResponse
@@ -46,6 +53,59 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from readability import Document as ReadabilityDoc
 from boilerpy3 import extractors as boiler_extractors
+
+# IA opcional (OpenRouter) - Importa função de reescrita IA
+try:
+    from ai_rewriter import rewrite_with_openrouter
+except Exception:
+    async def rewrite_with_openrouter(title, paragraphs, *_args, **_kw):
+        return title, paragraphs
+
+# Definição das variáveis de ambiente diretamente aqui:
+os.environ["REWRITE_WITH_AI"] = "1"
+os.environ["OPENROUTER_API_KEY"] = "sua-chave-openrouter-aqui"  # <-- Substitua aqui sua chave real
+
+# Caminho do banco SQLite persistente
+DB_PATH = os.getenv("DB_PATH", "/data/news.db")
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = os.getenv(name, str(default)).strip().lower()
+    return v in ("1","true","yes","on")
+
+# O restante do seu código segue sem alterações, incluindo a função process_article onde a IA é chamada:
+
+...
+# Dentro da função process_article (já existente no seu código), confirmar:
+use_ai = _env_bool("REWRITE_WITH_AI", False)
+try:
+    if use_ai:
+        final_for_name = base_for_abs
+        src_name = hostname_from_url(final_for_name)
+        title, paragraphs = await rewrite_with_openrouter(title, paragraphs, src_name, final_for_name)
+except Exception:
+    pass
+...
+
+# No endpoint RSS, manter a geração do feed com content:encoded que inclui título, imagem e parágrafos gerados:
+
+...
+
+for r in rows:
+    blocks = [f"<h1>{escape(r.get('title') or '')}</h1>"]
+    if img:
+        blocks.append(f"<p><img src='{img}' alt='imagem' /></p>")
+    for p in ps:
+        blocks.append(f"<p>{p}</p>")
+    blocks.append(f"<p><em>Fonte: <a href='{escape(r['url'])}' rel='nofollow noopener' target='_blank'>Matéria Original</a></em></p>")
+    content_html = "<content:encoded><![CDATA[" + "".join(blocks) + "]]></content:encoded>"
+...
+
+# O resto do código permanece conforme originalmente enviado.
+
+# Iniciar app FastAPI no final do arquivo:
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.getenv("PORT", "8000")), reload=True)
 
 # ---------- IA opcional (OpenRouter)
 try:
@@ -1109,3 +1169,4 @@ app = create_app()
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT","8000")))
+
