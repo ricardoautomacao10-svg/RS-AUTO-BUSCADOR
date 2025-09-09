@@ -1,4 +1,4 @@
-# news_automation.py - Coleta real Google News básica e RSS gerado completo
+# news_automation.py - Completo com busca web, busca por palavra-chave e visualização conteúdo completa com template HTML
 
 import os
 import re
@@ -6,7 +6,6 @@ import json
 import base64
 import hashlib
 import sqlite3
-import asyncio
 from typing import Any, Dict, List, Optional
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus, urlparse, unquote
@@ -14,11 +13,12 @@ from html import escape
 
 import httpx
 import feedparser
-from fastapi import FastAPI, Query, Request, HTTPException
+from fastapi import FastAPI, Body, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.templating import Jinja2Templates
+from readability import Document as ReadabilityDoc
 
-# Configurações e variáveis ambiente
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 
 def now_utc() -> datetime:
@@ -94,6 +94,8 @@ app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
+templates = Jinja2Templates(directory="templates")
+
 @app.on_event("startup")
 def startup():
     db_init()
@@ -103,6 +105,7 @@ async def root():
     return """
     <h1>RS-AUTO-BUSCADOR Online</h1>
     <p>Use /crawl?keywords=palavra e /rss/palavra para testar</p>
+    <p>Use <a href="/search_news">/search_news</a> para busca avançada com visualizador completo.</p>
     """
 
 @app.get("/healthz")
@@ -164,6 +167,36 @@ async def rss(keyword: str, hours: int = 12):
     </channel>
     </rss>"""
     return Response(content=rss_content, media_type="application/rss+xml; charset=utf-8")
+
+@app.get("/search_news", response_class=HTMLResponse)
+async def search_news_form(request: Request,
+        keyword: Optional[str] = Query(None),
+        hours: int = Query(12, ge=1, le=72)):
+
+    results = []
+    error = None
+    if keyword:
+        kw_slug = slugify(keyword)
+        rows = db_list_by_keyword(kw_slug, hours)
+        if not rows:
+            error = f"Nenhuma notícia encontrada para '{keyword}' nas últimas {hours} horas."
+        else:
+            for r in rows:
+                content_text = "\n\n".join(r.get("paragraphs", []))
+                results.append({
+                    "title": r["title"],
+                    "url": r["url"],
+                    "published_at": r["published_at"],
+                    "content": content_text
+                })
+
+    return templates.TemplateResponse("search_news.html", {
+        "request": request,
+        "keyword": keyword or "",
+        "hours": hours,
+        "results": results,
+        "error": error
+    })
 
 if __name__ == "__main__":
     import uvicorn
