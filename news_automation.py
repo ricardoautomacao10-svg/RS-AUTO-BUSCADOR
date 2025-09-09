@@ -1,23 +1,20 @@
-# news_automation.py - Completo com busca web, busca por palavra-chave e visualização conteúdo completa com template HTML
-
 import os
 import re
 import json
 import base64
 import hashlib
 import sqlite3
-from typing import Any, Dict, List, Optional
+from typing import List, Dict
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus, urlparse, unquote
+from urllib.parse import quote_plus
 from html import escape
 
 import httpx
 import feedparser
-from fastapi import FastAPI, Body, Query, Request, HTTPException
+from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.templating import Jinja2Templates
-from readability import Document as ReadabilityDoc
 
 DB_PATH = os.getenv("DB_PATH", "/data/news.db")
 
@@ -54,7 +51,7 @@ def db_init():
     con.commit()
     con.close()
 
-def db_upsert(item: Dict[str, Any]) -> None:
+def db_upsert(item: Dict):
     con = sqlite3.connect(DB_PATH)
     con.execute("""
         INSERT INTO items (id, url, title, paragraphs, published_at, keyword, created_at)
@@ -65,27 +62,28 @@ def db_upsert(item: Dict[str, Any]) -> None:
             published_at=excluded.published_at,
             keyword=excluded.keyword,
             created_at=excluded.created_at
-    """, (
-        item['id'], item['url'], item['title'], json.dumps(item.get('paragraphs', []), ensure_ascii=False),
-        item['published_at'], item['keyword'], iso(now_utc())
-    ))
+    """, (item['id'], item['url'], item['title'], json.dumps(item['paragraphs'], ensure_ascii=False),
+          item['published_at'], item['keyword'], iso(now_utc())))
     con.commit()
     con.close()
 
-def db_list_by_keyword(keyword_slug: str, hours: int = 12) -> List[Dict[str, Any]]:
+def db_list_by_keyword(keyword: str, hours: int = 12) -> List[Dict]:
     cutoff = iso(now_utc() - timedelta(hours=hours))
     con = sqlite3.connect(DB_PATH)
     cur = con.execute("""
-        SELECT id, url, title, paragraphs, published_at
-        FROM items WHERE keyword=? AND created_at > ? ORDER BY created_at DESC
-    """, (keyword_slug, cutoff))
+        SELECT id, url, title, paragraphs, published_at FROM items
+        WHERE keyword = ? AND created_at > ?
+        ORDER BY created_at DESC
+    """, (keyword, cutoff))
     rows = cur.fetchall()
     con.close()
     out = []
     for r in rows:
         out.append({
-            "id": r[0], "url": r[1], "title": r[2],
-            "paragraphs": json.loads(r[3] or "[]"),
+            "id": r[0],
+            "url": r[1],
+            "title": r[2],
+            "paragraphs": json.loads(r[3]),
             "published_at": r[4]
         })
     return out
@@ -104,8 +102,7 @@ def startup():
 async def root():
     return """
     <h1>RS-AUTO-BUSCADOR Online</h1>
-    <p>Use /crawl?keywords=palavra e /rss/palavra para testar</p>
-    <p>Use <a href="/search_news">/search_news</a> para busca avançada com visualizador completo.</p>
+    <p>Use /crawl?keywords=alguma palavra e depois /search_news para ver resultados.</p>
     """
 
 @app.get("/healthz")
@@ -122,7 +119,7 @@ async def crawl(keywords: str = Query(...)):
         feed = feedparser.parse(r.text)
 
         for entry in feed.entries[:20]:
-            paragraphs = [entry.summary] if hasattr(entry, "summary") else []
+            paragraphs = [entry.summary] if hasattr(entry, 'summary') else []
             published = entry.get("published", iso(now_utc()))
             item = {
                 "id": stable_id(entry.link),
@@ -144,9 +141,7 @@ async def rss(keyword: str, hours: int = 12):
         raise HTTPException(status_code=404, detail="Nenhuma notícia encontrada para essa palavra-chave.")
     items_xml = ""
     for r in rows:
-        desc_html = ""
-        for p in r.get("paragraphs", []):
-            desc_html += f"<p>{escape(p)}</p>"
+        desc_html = "".join(f"<p>{escape(p)}</p>" for p in r['paragraphs'])
         items_xml += f"""
         <item>
             <title>{escape(r['title'])}</title>
@@ -170,9 +165,8 @@ async def rss(keyword: str, hours: int = 12):
 
 @app.get("/search_news", response_class=HTMLResponse)
 async def search_news_form(request: Request,
-        keyword: Optional[str] = Query(None),
-        hours: int = Query(12, ge=1, le=72)):
-
+                           keyword: str = Query(None),
+                           hours: int = Query(12, ge=1, le=72)):
     results = []
     error = None
     if keyword:
