@@ -21,15 +21,15 @@
 <h1>Gerar RSS - RS-AUTO-BUSCADOR</h1>
 
 <form method="post" action="/generate">
-  <label for="keyword">Informe a palavra-chave (ou deixe em branco para usar link):</label>
-  <input type="text" id="keyword" name="keyword" value="{{ keyword }}">
-  
-  <label for="link">Ou informe um link direto para adicionar:</label>
-  <input type="text" id="link" name="link" value="{{ link }}">
-  
+  <label for="keyword">Palavra-chave (ou deixe em branco para usar link):</label>
+  <input type="text" id="keyword" name="keyword" value="{{ keyword }}"/>
+
+  <label for="link">Link direto (ou deixe em branco para usar palavra-chave):</label>
+  <input type="text" id="link" name="link" value="{{ link }}"/>
+
   <label for="hours">Últimas horas para coleta (1-72):</label>
-  <input type="number" id="hours" name="hours" min="1" max="72" value="{{ hours }}">
-  
+  <input type="number" id="hours" name="hours" min="1" max="72" value="{{ hours }}"/>
+
   <button type="submit">Gerar RSS e Mostrar Resultados</button>
 </form>
 
@@ -43,8 +43,8 @@
 {% for item in results %}
   <div class="result">
     <div><strong>Título:</strong> <a href="{{ item.url }}" target="_blank">{{ item.title }}</a></div>
-    <div><strong>Data da notícia:</strong> {{ item.published_at }}</div>
-    <div><label>Conteúdo completo (copie e cole):</label></div>
+    <div><strong>Data:</strong> {{ item.published_at }}</div>
+    <div><label>Conteúdo completo (copie/cole):</label></div>
     <textarea readonly>{{ item.content }}</textarea>
   </div>
 {% endfor %}
