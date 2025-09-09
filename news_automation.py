@@ -35,7 +35,7 @@ def slugify(text: str) -> str:
     return text
 
 def db_init():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)  # Cria pasta /data se não existir
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     con = sqlite3.connect(DB_PATH)
     con.execute("""
         CREATE TABLE IF NOT EXISTS items (
@@ -68,12 +68,12 @@ def db_upsert(item: Dict):
     con.close()
 
 def db_list_by_keyword(keyword: str, hours: int = 12) -> List[Dict]:
-    cutoff = iso(now_utc() - timedelta(hours=hours))
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     con = sqlite3.connect(DB_PATH)
     cur = con.execute("""
         SELECT id, url, title, paragraphs, published_at FROM items
-        WHERE keyword = ? AND created_at > ?
-        ORDER BY created_at DESC
+        WHERE keyword = ? AND published_at >= ?
+        ORDER BY published_at DESC
     """, (keyword, cutoff))
     rows = cur.fetchall()
     con.close()
@@ -142,14 +142,20 @@ async def generate_result(request: Request,
             r = await client.get(url)
             feed = feedparser.parse(r.text)
             for entry in feed.entries[:20]:
+                pub = entry.get("published_parsed") or entry.get("updated_parsed")
+                if pub and hasattr(pub, "tm_year"):
+                    dt_pub = datetime(*pub[:6], tzinfo=timezone.utc)
+                    pub_iso = iso(dt_pub)
+                else:
+                    # Ignorar se não tiver data válida para evitar lixo
+                    continue
                 paras = [entry.summary] if hasattr(entry, 'summary') else []
-                pub = entry.get("published", iso(now_utc()))
                 db_upsert({
                     "id": stable_id(entry.link),
                     "url": entry.link,
                     "title": entry.title,
                     "paragraphs": paras,
-                    "published_at": pub,
+                    "published_at": pub_iso,
                     "keyword": kw_slug
                 })
 
