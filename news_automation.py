@@ -11,6 +11,8 @@ from html import escape
 
 import httpx
 import feedparser
+import requests
+from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query, Request, Form
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -88,6 +90,19 @@ def db_list_by_keyword(keyword: str, hours: int = 12) -> List[Dict]:
         })
     return out
 
+def get_clean_title_and_content(url: str):
+    try:
+        r = requests.get(url, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
+        title_tag = soup.find("title")
+        title = title_tag.text.strip() if title_tag else ""
+        # Tenta extrair o conteúdo principal: primeiro parágrafo > div principal > etc
+        p_tag = soup.find("p")
+        content = p_tag.text.strip() if p_tag else ""
+        return title, content
+    except Exception:
+        return "", ""
+
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
@@ -100,10 +115,7 @@ def startup():
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
-    return """
-    <h1>RS-AUTO-BUSCADOR Online</h1>
-    <p>Use <a href='/generate'>/generate</a> para criar um RSS</p>
-    """
+    return """<h1>RS-AUTO-BUSCADOR Online</h1><p>Use <a href='/generate'>/generate</a> para gerar RSS com notícias.</p>"""
 
 @app.get("/generate", response_class=HTMLResponse)
 async def generate_form(request: Request):
@@ -124,40 +136,47 @@ async def generate_result(request: Request,
             "results": []
         })
 
+    results_temp = []
+    kw_slug = slugify(link if link else keyword)
     if link:
-        kw_slug = slugify(link)
+        # Adiciona notícia do link direto
+        title, content = get_clean_title_and_content(link)
+        if not title:
+            title = "Link adicionado manualmente"
         item = {
             "id": stable_id(link),
             "url": link,
-            "title": "Link adicionado manualmente",
-            "paragraphs": ["Conteúdo extraído ou adicionado manualmente."],
+            "title": title,
+            "paragraphs": [content],
             "published_at": iso(now_utc()),
             "keyword": kw_slug
         }
         db_upsert(item)
     else:
-        kw_slug = slugify(keyword)
+        # Busca Google News RSS + raspagem dos links para título/conteúdo limpos
         url = f"https://news.google.com/rss/search?q={quote_plus(keyword)}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
         async with httpx.AsyncClient() as client:
             r = await client.get(url)
             feed = feedparser.parse(r.text)
-            for entry in feed.entries[:20]:
-                pub = entry.get("published_parsed") or entry.get("updated_parsed")
-                if pub and hasattr(pub, "tm_year"):
-                    dt_pub = datetime(*pub[:6], tzinfo=timezone.utc)
-                    pub_iso = iso(dt_pub)
-                else:
-                    # Ignorar se não tiver data válida para evitar lixo
+            seen_titles = set()
+            links = [entry.link for entry in feed.entries[:50]]
+            for l in links:
+                title, content = get_clean_title_and_content(l)
+                if not title:
                     continue
-                paras = [entry.summary] if hasattr(entry, 'summary') else []
-                db_upsert({
-                    "id": stable_id(entry.link),
-                    "url": entry.link,
-                    "title": entry.title,
-                    "paragraphs": paras,
-                    "published_at": pub_iso,
+                clean_title = title.lower().replace("'", "").replace("\"", "")
+                if clean_title in seen_titles:
+                    continue
+                seen_titles.add(clean_title)
+                item = {
+                    "id": stable_id(l),
+                    "url": l,
+                    "title": title,
+                    "paragraphs": [content],
+                    "published_at": iso(now_utc()),
                     "keyword": kw_slug
-                })
+                }
+                db_upsert(item)
 
     results = db_list_by_keyword(kw_slug, hours)
     rss_url = f"/rss/{kw_slug}?hours={hours}"
