@@ -6,4 +6,3 @@ readability-lxml
 boilerpy3
 feedparser
 python-slugify
-sqlite3
