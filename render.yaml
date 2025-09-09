@@ -1,14 +1,10 @@
-services:
-  - type: web
-    name: news-automation
-    env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn asgi:app --host 0.0.0.0 --port $PORT
-    plan: free
-    disk:
-      name: data
-      mountPath: /data
-      sizeGB: 1
-    envVars:
-      - key: DB_PATH
-        value: /data/news.db
+cmd: uvicorn news_automation:app --host 0.0.0.0 --port $PORT
+env:
+  DB_PATH: /data/news.db
+  REWRITE_WITH_AI: "1"
+  OPENROUTER_API_KEY: "<sua chave aqui>"
+  DEFAULT_KEYWORDS: "litoral-norte-de-sao-paulo"
+  REQUIRE_H1: "true"
+  REQUIRE_IMAGE: "true"
+  MIN_WORDS: "200"
+  CRON_INTERVAL_MIN: "15"
