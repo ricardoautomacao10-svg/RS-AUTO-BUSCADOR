@@ -13,6 +13,7 @@ import httpx
 import feedparser
 import requests
 from bs4 import BeautifulSoup
+from dateutil import parser
 from fastapi import FastAPI, Query, Request, Form
 from fastapi.responses import HTMLResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -90,18 +91,35 @@ def db_list_by_keyword(keyword: str, hours: int = 12) -> List[Dict]:
         })
     return out
 
-def get_clean_title_and_content(url: str):
+def get_clean_title_content_date(url: str):
     try:
         r = requests.get(url, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
         title_tag = soup.find("title")
         title = title_tag.text.strip() if title_tag else ""
-        # Tenta extrair o conteúdo principal: primeiro parágrafo > div principal > etc
+
         p_tag = soup.find("p")
         content = p_tag.text.strip() if p_tag else ""
-        return title, content
+
+        date_str = None
+        for tag in soup.find_all(["time", "meta"]):
+            if tag.name == "time" and tag.has_attr("datetime"):
+                date_str = tag["datetime"]
+                break
+            elif tag.name == "meta" and tag.get("property") in ["article:published_time", "og:published_time"]:
+                date_str = tag.get("content") or tag.get("value")
+                break
+
+        pub_date = None
+        if date_str:
+            try:
+                pub_date = parser.parse(date_str)
+            except:
+                pub_date = None
+
+        return title, content, pub_date
     except Exception:
-        return "", ""
+        return "", "", None
 
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -136,44 +154,45 @@ async def generate_result(request: Request,
             "results": []
         })
 
-    results_temp = []
     kw_slug = slugify(link if link else keyword)
     if link:
-        # Adiciona notícia do link direto
-        title, content = get_clean_title_and_content(link)
+        title, content, pub_date = get_clean_title_content_date(link)
         if not title:
             title = "Link adicionado manualmente"
+        if not pub_date:
+            pub_date = now_utc()
         item = {
             "id": stable_id(link),
             "url": link,
             "title": title,
             "paragraphs": [content],
-            "published_at": iso(now_utc()),
+            "published_at": iso(pub_date),
             "keyword": kw_slug
         }
         db_upsert(item)
     else:
-        # Busca Google News RSS + raspagem dos links para título/conteúdo limpos
         url = f"https://news.google.com/rss/search?q={quote_plus(keyword)}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
         async with httpx.AsyncClient() as client:
             r = await client.get(url)
             feed = feedparser.parse(r.text)
             seen_titles = set()
-            links = [entry.link for entry in feed.entries[:50]]
-            for l in links:
-                title, content = get_clean_title_and_content(l)
+            for entry in feed.entries[:50]:
+                l = entry.link
+                title, content, pub_date = get_clean_title_content_date(l)
                 if not title:
                     continue
                 clean_title = title.lower().replace("'", "").replace("\"", "")
                 if clean_title in seen_titles:
                     continue
                 seen_titles.add(clean_title)
+                if not pub_date:
+                    pub_date = now_utc()
                 item = {
                     "id": stable_id(l),
                     "url": l,
                     "title": title,
                     "paragraphs": [content],
-                    "published_at": iso(now_utc()),
+                    "published_at": iso(pub_date),
                     "keyword": kw_slug
                 }
                 db_upsert(item)
