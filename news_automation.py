@@ -1,5 +1,3 @@
-# news_automation.py — código completo e atualizado com rota raiz e IA ativada
-
 import os
 import re
 import json
@@ -9,13 +7,13 @@ import sqlite3
 import asyncio
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus, urlparse, parse_qs, unquote, urljoin
+from urllib.parse import quote_plus, urlparse, unquote, urljoin
 from html import escape
 
 import httpx
 import feedparser
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Body, HTTPException, Query, Request
+from fastapi import FastAPI, Body, Query, Request, HTTPException
 from fastapi.responses import HTMLResponse, Response, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -161,7 +159,6 @@ async def fetch_html_ex(client: httpx.AsyncClient, url: str) -> Tuple[Optional[s
         info["error"] = str(e)[:300]
     return None, info
 
-
 async def process_article(
     client: httpx.AsyncClient,
     url: str, keyword: str, pub_dt: datetime,
@@ -204,7 +201,6 @@ async def process_article(
         if paragraphs == []:
             paragraphs = paragraphs_from_html(html)
 
-    # IA rewriter - dentro da função async
     use_ai = _env_bool("REWRITE_WITH_AI", False)
     try:
         if use_ai:
@@ -235,14 +231,13 @@ async def process_article(
     }
     return (item, None) if not want_debug else (item, None, {"decision": "ok"})
 
-# --- Abaixo, crie o aplicativo FastAPI e adicione as rotas essenciais ---
-
+# Rota raiz
 app = FastAPI(title="News Automation")
-
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,
                    allow_methods=["*"], allow_headers=["*"])
 
-# Rota raiz para evitar erro 404 no /
+app.mount("/static", StaticFiles(directory="static", html=True, check_dir=False), name="static")
+
 @app.get("/", response_class=HTMLResponse)
 async def root_get():
     return HTMLResponse(
@@ -261,12 +256,11 @@ async def root_get():
         """
     )
 
-# Endpoint healthcheck
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "time": iso(now_utc()), "db": DB_PATH}
 
-# Endpoint RSS
+# Endpoint RSS principal
 @app.get("/rss/{keyword_slug}")
 async def rss_feed(
     request: Request,
@@ -280,8 +274,7 @@ async def rss_feed(
     min_words: int = Query(200, ge=0, le=5000),
     max_items: int = Query(50, ge=1, le=200)
 ):
-    # Aqui deve implementar chamadas para crawl se refresh=True (não detalhado para brevidade)
-    
+    # Simples retorno da lista, sem refresh automático (implementar conforme necessidade)
     rows = db_list_by_keyword(keyword_slug, since_hours=max(1, hours), with_content=True)
     valid = []
     for r in rows:
@@ -339,9 +332,6 @@ async def rss_feed(
     parts.append("</channel></rss>")
     return Response(content="\n".join(parts), media_type="application/rss+xml; charset=utf-8")
 
-
-# Implemente aqui todas as demais rotas, funções auxiliares (db_list_by_keyword, crawl_keyword, db_init e outras)
-# conforme código original, mantendo consistência e async correto para o seu sistema.
 
 if __name__ == "__main__":
     import uvicorn
