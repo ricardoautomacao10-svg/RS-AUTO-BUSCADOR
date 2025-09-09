@@ -6,3 +6,4 @@ readability-lxml
 boilerpy3
 feedparser
 python-slugify
+jinja2
