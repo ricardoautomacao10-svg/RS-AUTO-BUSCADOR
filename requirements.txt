@@ -3,7 +3,7 @@ uvicorn
 httpx
 beautifulsoup4
 readability-lxml
-sqlite3
-feedparser
 boilerpy3
+feedparser
 python-slugify
+sqlite3
