@@ -1,10 +1,25 @@
-cmd: uvicorn news_automation:app --host 0.0.0.0 --port $PORT
-env:
-  DB_PATH: /data/news.db
-  REWRITE_WITH_AI: "1"
-  OPENROUTER_API_KEY: "<sua chave aqui>"
-  DEFAULT_KEYWORDS: "litoral-norte-de-sao-paulo"
-  REQUIRE_H1: "true"
-  REQUIRE_IMAGE: "true"
-  MIN_WORDS: "200"
-  CRON_INTERVAL_MIN: "15"
+services:
+  - type: web
+    name: rs-auto-buscador
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn news_automation:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DB_PATH
+        value: /data/news.db
+      - key: REWRITE_WITH_AI
+        value: "1"
+      - key: OPENROUTER_API_KEY
+        value: "SUA_CHAVE_OPENROUTER_AQUI"
+      - key: DEFAULT_KEYWORDS
+        value: "litoral-norte-de-sao-paulo"
+      - key: REQUIRE_H1
+        value: "true"
+      - key: REQUIRE_IMAGE
+        value: "true"
+      - key: MIN_WORDS
+        value: "200"
+      - key: CRON_INTERVAL_MIN
+        value: "15"
+    disk:
+      mountPath: /data
