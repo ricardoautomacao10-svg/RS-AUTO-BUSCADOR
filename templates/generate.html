@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<title>Gerar RSS - RS-AUTO-BUSCADOR</title>
+<style>
+  body { font-family: Arial, sans-serif; max-width: 900px; margin: 20px auto; padding: 0 20px; }
+  label { font-weight: bold; }
+  input, button, select { margin-top: 5px; margin-bottom: 15px; padding: 8px; font-size: 16px; width: 100%; max-width: 400px; }
+  button { cursor: pointer; background-color: #2980b9; color: white; border: none; }
+  button:hover { background-color: #3498db; }
+  .error { color: #d9534f; font-weight: bold; }
+  .result { border: 1px solid #ddd; padding: 10px; margin-bottom: 15px; }
+  .rss-link { margin: 10px 0; font-size: 1.1em; font-weight: bold; color: #2c3e50; }
+  textarea { width: 100%; height: 100px; font-family: monospace; white-space: pre-wrap; }
+  a { color: #1a73e8; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<h1>Gerar RSS - RS-AUTO-BUSCADOR</h1>
+
+<form method="post" action="/generate">
+  <label for="keyword">Informe a palavra-chave (ou deixe em branco para usar link):</label>
+  <input type="text" id="keyword" name="keyword" value="{{ keyword }}">
+  
+  <label for="link">Ou informe um link direto para adicionar:</label>
+  <input type="text" id="link" name="link" value="{{ link }}">
+  
+  <label for="hours">Últimas horas para coleta (1-72):</label>
+  <input type="number" id="hours" name="hours" min="1" max="72" value="{{ hours }}">
+  
+  <button type="submit">Gerar RSS e Mostrar Resultados</button>
+</form>
+
+{% if error %}
+<p class="error">{{ error }}</p>
+{% endif %}
+
+{% if results %}
+<p class="rss-link">RSS gerado: <a href="{{ rss_url }}" target="_blank">{{ rss_url }}</a> ({{ count }} itens coletados)</p>
+
+{% for item in results %}
+  <div class="result">
+    <div><strong>Título:</strong> <a href="{{ item.url }}" target="_blank">{{ item.title }}</a></div>
+    <div><strong>Data da notícia:</strong> {{ item.published_at }}</div>
+    <div><label>Conteúdo completo (copie e cole):</label></div>
+    <textarea readonly>{{ item.content }}</textarea>
+  </div>
+{% endfor %}
+{% endif %}
+
+</body>
+</html>
