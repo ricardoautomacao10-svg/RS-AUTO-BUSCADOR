@@ -59,21 +59,29 @@ def db_list_recent(hours: int):
         "published_at": r[4]
     } for r in rows]
 
+def get_original_link(entry):
+    # Tenta extrair link real da notícia, evitando links do Google News
+    if hasattr(entry, 'links') and len(entry.links) > 1:
+        for l in entry.links:
+            href = l.get('href')
+            if href and 'news.google.com' not in href:
+                return href
+    return entry.link
+
 def scrape_content(url: str):
     try:
         r = requests.get(url, timeout=12, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Tenta título h1 ou title
         title_tag = soup.find("h1") or soup.find("title")
         title = title_tag.get_text(strip=True) if title_tag else "Sem título"
 
-        # Conteúdo simples concatenando parágrafos
         paragraphs = soup.find_all("p")
         content = "\n".join(p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True))
 
         return title, content
-    except:
+    except Exception as e:
+        print(f"Erro scraping {url}: {e}")
         return "Sem título", ""
 
 app = FastAPI()
@@ -85,11 +93,11 @@ def startup():
 @app.get("/", response_class=HTMLResponse)
 def homepage():
     return """
-    <h1>Busca simplificada de notícias para RSS urgente</h1>
+    <h1>Gerar RSS de Notícias</h1>
     <form action="/rss" method="get">
       Palavra-chave: <input name="keyword" required style="width:300px"/>
       Últimas horas para buscar: <input name="hours" type="number" min="1" max="72" value="12"/>
-      <button type="submit">Buscar e gerar RSS</button>
+      <button type="submit">Buscar notícias e gerar RSS</button>
     </form>
     """
 
@@ -99,14 +107,21 @@ def rss(keyword: str, hours: int = Query(12)):
     r = httpx.get(url)
     feed = feedparser.parse(r.text)
     unique_links = set()
+    print(f"Buscando notícias para '{keyword}' das últimas {hours} horas")
+
     for entry in feed.entries:
-        link = entry.link
+        link = get_original_link(entry)
         if link in unique_links:
             continue
         unique_links.add(link)
 
-        title, content = scrape_content(link)
         published_at = br_now().isoformat()
+
+        title, content = scrape_content(link)
+        print(f"Raspando notícia: {title[:50]} | conteúdo chars: {len(content)}")
+        if not title or not content:
+            print(f"Ignorado por dados incompletos: {link}")
+            continue
 
         item = {
             "id": stable_id(link),
@@ -137,11 +152,12 @@ def rss(keyword: str, hours: int = Query(12)):
     rss = f"""<?xml version="1.0" encoding="utf-8" ?>
     <rss version="2.0">
         <channel>
-            <title>RSS Notícias Simplificado: {escape(keyword)}</title>
+            <title>RSS Notícias: {escape(keyword)}</title>
             <link>/rss?keyword={quote_plus(keyword)}</link>
             <description>Notícias recentes coletadas via scraping - últimas {hours}h</description>
             {items_xml}
         </channel>
     </rss>"""
 
+    print(f"RSS gerado com {len(items)} itens")
     return Response(rss, media_type="application/rss+xml")
