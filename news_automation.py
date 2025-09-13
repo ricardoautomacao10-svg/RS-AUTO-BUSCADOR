@@ -20,7 +20,6 @@ def stable_id(url: str) -> str:
     return base64.urlsafe_b64encode(h).decode().rstrip("=")
 
 def br_now():
-    # Horário Brasil/São Paulo (GMT-3)
     return datetime.now(timezone(timedelta(hours=-3)))
 
 def db_init():
@@ -64,33 +63,32 @@ def db_list_recent(hours: int):
 
 def scrape_content(url: str):
     try:
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, timeout=12, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Título: tenta h1, senão title
-        title_tag = soup.find("h1") or soup.find("title")
+        # Título preferencialmente h1, senão title
+        title_tag = soup.find("h1")
         title = title_tag.get_text(strip=True) if title_tag else ""
+        if not title:
+            title_tag2 = soup.find("title")
+            if title_tag2:
+                title = title_tag2.get_text(strip=True)
 
-        # Imagem principal: tenta img ou og:image
-        img = ""
+        # Imagem principal: procura meta og:image se img não for http
         img_tag = soup.find("img")
-        if img_tag and img_tag.has_attr("src") and img_tag["src"].startswith("http"):
-            img = img_tag["src"]
-        else:
-            og_img = soup.find("meta", property="og:image")
-            if og_img and og_img.has_attr("content"):
-                img = og_img["content"]
+        img = img_tag["src"] if img_tag and img_tag.has_attr("src") and "http" in img_tag["src"] else ""
+        if not img:
+            og_tag = soup.find("meta", property="og:image")
+            if og_tag and og_tag.has_attr("content"):
+                img = og_tag["content"]
 
-        # Conteúdo: todos os parágrafos
+        # Parágrafos: todos <p> concatenados
         paragraphs = soup.find_all("p")
         content = "\n".join(p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True))
 
-        # Só retorna se os três existirem e forem mínimamente válidos
-        if len(title) > 8 and len(img) > 9 and len(content) > 32:
-            return title, img, content
-        else:
-            return "", "", ""
-    except Exception:
+        return title, img, content
+    except Exception as e:
+        print(f"Erro ao raspar {url}: {e}")
         return "", "", ""
 
 app = FastAPI()
@@ -112,17 +110,22 @@ def homepage():
 
 @app.get("/rss")
 def rss(keyword: str, hours: int = Query(12)):
-    # Busca no Google News RSS
     url = f"https://news.google.com/rss/search?q={quote_plus(keyword)}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     r = httpx.get(url)
     feed = feedparser.parse(r.text)
     unique_links = set()
+    print("--- INICIANDO COLETA ---")
     for entry in feed.entries:
         link = entry.link
+        print("Link do feed:", link)
         if link in unique_links: continue
         unique_links.add(link)
         title, img, content = scrape_content(link)
+        print("-> Título extraído:", title)
+        print("-> Imagem extraída:", img)
+        print("-> Conteúdo extraído:", content[:80])
         if not title or not img or not content:
+            print("IGNORADO: Faltou algum campo")
             continue
         item = {
             "id": stable_id(link),
@@ -161,4 +164,5 @@ def rss(keyword: str, hours: int = Query(12)):
         </channel>
     </rss>"""
 
+    print("--- COLETA FINALIZADA ---")
     return Response(rss, media_type="application/rss+xml")
