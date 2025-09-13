@@ -1,9 +1,0 @@
-fastapi
-uvicorn
-httpx
-feedparser
-jinja2
-python-multipart
-requests
-beautifulsoup4
-python-dateutil
