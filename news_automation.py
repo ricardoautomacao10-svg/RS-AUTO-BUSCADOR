@@ -2,20 +2,16 @@ import os
 import hashlib
 import base64
 import sqlite3
-import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 from html import escape
 
-import httpx
 import feedparser
+import httpx
 import requests
 from bs4 import BeautifulSoup
-from fastapi import FastAPI, Form, Query
+from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, Response
-
-# === CONFIGURE SUA CHAVE OPENROUTER AQUI ===
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "SUA_CHAVE_OPENROUTER_AQUI")
 
 DB_PATH = "./news.db"
 
@@ -33,12 +29,9 @@ def db_init():
         CREATE TABLE IF NOT EXISTS items (
             id TEXT PRIMARY KEY,
             url TEXT,
-            titulo TEXT,
-            subtitulo TEXT,
-            meta TEXT,
-            texto TEXT,
-            tags TEXT,
+            title TEXT,
             img TEXT,
+            content TEXT,
             published_at TEXT
         )
     """)
@@ -48,96 +41,57 @@ def db_init():
 def db_upsert(item):
     con = sqlite3.connect(DB_PATH)
     con.execute("""
-        INSERT OR REPLACE INTO items
-        (id, url, titulo, subtitulo, meta, texto, tags, img, published_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (item['id'], item['url'], item['titulo'], item['subtitulo'], item['meta'],
-          item['texto'], item['tags'], item['img'], item['published_at']))
+        INSERT OR REPLACE INTO items (id, url, title, img, content, published_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (item['id'], item['url'], item['title'], item['img'], item['content'], item['published_at']))
     con.commit()
     con.close()
 
 def db_list_recent(hours: int):
     cutoff = (br_now() - timedelta(hours=hours)).isoformat()
     con = sqlite3.connect(DB_PATH)
-    cur = con.execute("""
-        SELECT id, url, titulo, subtitulo, meta, texto, tags, img, published_at
-        FROM items WHERE published_at >= ? ORDER BY published_at DESC
-    """, (cutoff,))
+    cur = con.execute("SELECT id, url, title, img, content, published_at FROM items WHERE published_at >= ? ORDER BY published_at DESC", (cutoff,))
     rows = cur.fetchall()
     con.close()
     return [{
         "id": r[0],
         "url": r[1],
-        "titulo": r[2],
-        "subtitulo": r[3],
-        "meta": r[4],
-        "texto": r[5],
-        "tags": r[6],
-        "img": r[7],
-        "published_at": r[8]
+        "title": r[2],
+        "img": r[3],
+        "content": r[4],
+        "published_at": r[5]
     } for r in rows]
-
-def is_ad_tag(tag):
-    # Remove anúncios/widget
-    if tag.name in ["script", "style", "iframe"]:
-        return True
-    cls = tag.get("class", [])
-    for cl in cls if isinstance(cls, list) else [cls]:
-        if "ad" in cl or "ads" in cl or "sponsor" in cl:
-            return True
-    return False
 
 def scrape_content(url: str):
     try:
         r = requests.get(url, timeout=10)
         soup = BeautifulSoup(r.text, "html.parser")
-        for ad in soup.find_all(is_ad_tag):
-            ad.decompose()
-        title_tag = soup.find("h1")
+
+        # Título: tenta h1, senão title
+        title_tag = soup.find("h1") or soup.find("title")
         title = title_tag.get_text(strip=True) if title_tag else ""
+
+        # Imagem principal: tenta img ou og:image
+        img = ""
         img_tag = soup.find("img")
-        img = img_tag["src"] if img_tag and img_tag.has_attr("src") else ""
-        if not img:
-            return "", "", ""
+        if img_tag and img_tag.has_attr("src") and img_tag["src"].startswith("http"):
+            img = img_tag["src"]
+        else:
+            og_img = soup.find("meta", property="og:image")
+            if og_img and og_img.has_attr("content"):
+                img = og_img["content"]
+
+        # Conteúdo: todos os parágrafos
         paragraphs = soup.find_all("p")
         content = "\n".join(p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True))
-        return title, img, content
-    except:
-        return "", "", ""
 
-def enrich_news_with_ai(title, img_url, content):
-    # Prompt pedindo todos campos em JSON
-    prompt = f"""Reescreva o texto abaixo criando um artigo inédito, objetivo, fluido:
-Título: {title}
-Imagem: {img_url}
-Conteúdo: {content}
-Retorne no seguinte formato JSON:
-{{
-  "titulo": "...",
-  "subtitulo": "...",
-  "meta": "...",
-  "texto": "...",
-  "tags": "tag1, tag2, tag3",
-  "img": "URL"
-}}"""
-    headers = {"Authorization": f"Bearer {OPENROUTER_API_KEY}"}
-    body = {
-        "model": "gpt-3.5-turbo",  # ou outro modelo que você tem acesso
-        "messages": [{"role": "user", "content": prompt}]
-    }
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers=headers,
-            json=body,
-            timeout=60
-        )
-        result = resp.json()
-        msg = result["choices"][0]["message"]["content"]
-        data = json.loads(msg)
-        return data
+        # Só retorna se os três existirem e forem mínimamente válidos
+        if len(title) > 8 and len(img) > 9 and len(content) > 32:
+            return title, img, content
+        else:
+            return "", "", ""
     except Exception:
-        return None
+        return "", "", ""
 
 app = FastAPI()
 
@@ -148,17 +102,17 @@ def startup():
 @app.get("/", response_class=HTMLResponse)
 def homepage():
     return """
-    <h1>Gerar RSS IA - Notícias</h1>
+    <h1>Gerar RSS de Notícias</h1>
     <form action="/rss" method="get">
       Palavra-chave: <input name="keyword" required style="width:300px"/>
       Últimas horas para buscar: <input name="hours" type="number" min="1" max="72" value="12"/>
-      <button type="submit">Buscar Notícias IA e Gerar RSS</button>
+      <button type="submit">Buscar notícias e gerar RSS</button>
     </form>
     """
 
 @app.get("/rss")
 def rss(keyword: str, hours: int = Query(12)):
-    # Busca e processa automaticamente
+    # Busca no Google News RSS
     url = f"https://news.google.com/rss/search?q={quote_plus(keyword)}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     r = httpx.get(url)
     feed = feedparser.parse(r.text)
@@ -168,19 +122,14 @@ def rss(keyword: str, hours: int = Query(12)):
         if link in unique_links: continue
         unique_links.add(link)
         title, img, content = scrape_content(link)
-        if not title or not img or not content: continue
-        ai_data = enrich_news_with_ai(title, img, content)
-        if not ai_data or not ai_data.get("titulo") or not ai_data.get("img"):
-            continue  # só salva se a IA retornou artigo válido com imagem
+        if not title or not img or not content:
+            continue
         item = {
             "id": stable_id(link),
             "url": link,
-            "titulo": ai_data["titulo"],
-            "subtitulo": ai_data.get("subtitulo", ""),
-            "meta": ai_data.get("meta", ""),
-            "texto": ai_data["texto"],
-            "tags": ai_data.get("tags", ""),
-            "img": ai_data["img"],
+            "title": title,
+            "img": img,
+            "content": content,
             "published_at": br_now().isoformat()
         }
         db_upsert(item)
@@ -191,17 +140,10 @@ def rss(keyword: str, hours: int = Query(12)):
 
     items_xml = ""
     for i in items:
-        description = f"""
-        <img src='{escape(i['img'])}'/><br>
-        <h1>{escape(i['titulo'])}</h1><br>
-        <h2>{escape(i['subtitulo'])}</h2><br>
-        <div>{escape(i['texto']).replace('\n','<br>')}</div><br>
-        <i>Meta: {escape(i['meta'])}</i><br>
-        <b>Tags:</b> {escape(i['tags'])}
-        """
+        description = f"<img src='{escape(i['img'])}'/><br>{escape(i['title'])}<br>{escape(i['content']).replace('\n','<br>')}"
         items_xml += f"""
         <item>
-            <title>{escape(i['titulo'])}</title>
+            <title>{escape(i['title'])}</title>
             <link>{escape(i['url'])}</link>
             <guid>{i['id']}</guid>
             <pubDate>{i['published_at']}</pubDate>
@@ -212,12 +154,11 @@ def rss(keyword: str, hours: int = Query(12)):
     rss = f"""<?xml version="1.0" encoding="UTF-8" ?>
     <rss version="2.0">
         <channel>
-            <title>RSS Notícias IA: {escape(keyword)}</title>
+            <title>RSS Notícias: {escape(keyword)}</title>
             <link>/rss?keyword={quote_plus(keyword)}</link>
-            <description>Notícias IA, últimas {hours}h</description>
+            <description>Notícias filtradas por palavra-chave, últimas {hours}h</description>
             {items_xml}
         </channel>
     </rss>"""
 
     return Response(rss, media_type="application/rss+xml")
-
