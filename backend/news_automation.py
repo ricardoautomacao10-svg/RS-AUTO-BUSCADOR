@@ -22,9 +22,12 @@ class NewsItem(BaseModel):
     generated_text: str
 
 
+@app.get("/")
+async def root():
+    return {"message": "NewsBot Backend está ativo e funcionando!"}
+
+
 async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
-    # Usamos um exemplo de busca em site de notícias fictício,
-    # no real substitua pela fonte desejada e lógica de scraping
     url = f"https://news.google.com/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
