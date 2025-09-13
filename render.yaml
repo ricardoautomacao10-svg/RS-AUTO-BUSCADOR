@@ -1,11 +1,7 @@
 services:
   - type: web
-    name: rs-auto-buscador
+    name: rs-auto-buscador-backend
     env: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn asgi:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: DB_PATH
-        value: /data/news.db
-    disk:
-      mountPath: /data
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn news_automation:app --host 0.0.0.0 --port $PORT"
+    autoDeploy: true
