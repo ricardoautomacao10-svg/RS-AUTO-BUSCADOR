@@ -20,7 +20,6 @@ def stable_id(url: str) -> str:
     return base64.urlsafe_b64encode(h).decode().rstrip("=")
 
 def br_now():
-    # Horário Brasil/São Paulo (GMT-3)
     return datetime.now(timezone(timedelta(hours=-3)))
 
 def db_init():
@@ -30,7 +29,6 @@ def db_init():
             id TEXT PRIMARY KEY,
             url TEXT,
             title TEXT,
-            img TEXT,
             content TEXT,
             published_at TEXT
         )
@@ -41,25 +39,24 @@ def db_init():
 def db_upsert(item):
     con = sqlite3.connect(DB_PATH)
     con.execute("""
-        INSERT OR REPLACE INTO items (id, url, title, img, content, published_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (item['id'], item['url'], item['title'], item['img'], item['content'], item['published_at']))
+        INSERT OR REPLACE INTO items (id, url, title, content, published_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (item['id'], item['url'], item['title'], item['content'], item['published_at']))
     con.commit()
     con.close()
 
 def db_list_recent(hours: int):
     cutoff = (br_now() - timedelta(hours=hours)).isoformat()
     con = sqlite3.connect(DB_PATH)
-    cur = con.execute("SELECT id, url, title, img, content, published_at FROM items WHERE published_at >= ? ORDER BY published_at DESC", (cutoff,))
+    cur = con.execute("SELECT id, url, title, content, published_at FROM items WHERE published_at >= ? ORDER BY published_at DESC", (cutoff,))
     rows = cur.fetchall()
     con.close()
     return [{
         "id": r[0],
         "url": r[1],
         "title": r[2],
-        "img": r[3],
-        "content": r[4],
-        "published_at": r[5]
+        "content": r[3],
+        "published_at": r[4]
     } for r in rows]
 
 def scrape_content(url: str):
@@ -67,31 +64,17 @@ def scrape_content(url: str):
         r = requests.get(url, timeout=12, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Título preferencialmente h1, senão title
+        # Tenta título h1 ou title
         title_tag = soup.find("h1") or soup.find("title")
-        title = title_tag.get_text(strip=True) if title_tag else ""
+        title = title_tag.get_text(strip=True) if title_tag else "Sem título"
 
-        # Imagem principal: tenta img ou og:image
-        img = ""
-        img_tag = soup.find("img")
-        if img_tag and img_tag.has_attr("src") and img_tag["src"].startswith("http"):
-            img = img_tag["src"]
-        else:
-            og_img = soup.find("meta", property="og:image")
-            if og_img and og_img.has_attr("content"):
-                img = og_img["content"]
-
-        # Conteúdo: todos os parágrafos
+        # Conteúdo simples concatenando parágrafos
         paragraphs = soup.find_all("p")
         content = "\n".join(p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True))
 
-        # Validação mínima
-        if len(title) > 8 and len(img) > 9 and len(content) > 32:
-            return title, img, content
-        return "", "", ""
-    except Exception as e:
-        print(f"Erro scraping {url}: {e}")
-        return "", "", ""
+        return title, content
+    except:
+        return "Sem título", ""
 
 app = FastAPI()
 
@@ -102,11 +85,11 @@ def startup():
 @app.get("/", response_class=HTMLResponse)
 def homepage():
     return """
-    <h1>Gerar RSS de Notícias</h1>
+    <h1>Busca simplificada de notícias para RSS urgente</h1>
     <form action="/rss" method="get">
       Palavra-chave: <input name="keyword" required style="width:300px"/>
       Últimas horas para buscar: <input name="hours" type="number" min="1" max="72" value="12"/>
-      <button type="submit">Buscar notícias e gerar RSS</button>
+      <button type="submit">Buscar e gerar RSS</button>
     </form>
     """
 
@@ -116,28 +99,19 @@ def rss(keyword: str, hours: int = Query(12)):
     r = httpx.get(url)
     feed = feedparser.parse(r.text)
     unique_links = set()
-    print(f"Buscando notícias para '{keyword}' das últimas {hours} horas")
-
     for entry in feed.entries:
         link = entry.link
         if link in unique_links:
             continue
         unique_links.add(link)
 
-        # Data da coleta: agora no fuso horário GMT-3
+        title, content = scrape_content(link)
         published_at = br_now().isoformat()
-
-        title, img, content = scrape_content(link)
-        print(f"Raspando notícia: {title[:50]} | img={'sim' if img else 'não'} | conteúdo chars: {len(content)}")
-        if not title or not img or not content:
-            print(f"Ignorado por dados incompletos: {link}")
-            continue
 
         item = {
             "id": stable_id(link),
             "url": link,
             "title": title,
-            "img": img,
             "content": content,
             "published_at": published_at
         }
@@ -149,7 +123,7 @@ def rss(keyword: str, hours: int = Query(12)):
 
     items_xml = ""
     for i in items:
-        description = f"<img src='{escape(i['img'])}'/><br>{escape(i['title'])}<br>{escape(i['content']).replace(chr(10),'<br>')}"
+        description = escape(i['content']).replace('\n', '<br>')
         items_xml += f"""
         <item>
             <title>{escape(i['title'])}</title>
@@ -160,15 +134,14 @@ def rss(keyword: str, hours: int = Query(12)):
         </item>
         """
 
-    rss = f"""<?xml version="1.0" encoding="UTF-8" ?>
+    rss = f"""<?xml version="1.0" encoding="utf-8" ?>
     <rss version="2.0">
         <channel>
-            <title>RSS Notícias: {escape(keyword)}</title>
+            <title>RSS Notícias Simplificado: {escape(keyword)}</title>
             <link>/rss?keyword={quote_plus(keyword)}</link>
-            <description>Notícias filtradas por palavra-chave, últimas {hours}h</description>
+            <description>Notícias recentes coletadas via scraping - últimas {hours}h</description>
             {items_xml}
         </channel>
     </rss>"""
 
-    print("RSS gerado com ", len(items), "itens")
     return Response(rss, media_type="application/rss+xml")
