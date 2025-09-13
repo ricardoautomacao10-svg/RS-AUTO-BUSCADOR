@@ -5,13 +5,13 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 from html import escape
-
 import feedparser
 import httpx
 import requests
 from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query
 from fastapi.responses import HTMLResponse, Response
+import time
 
 DB_PATH = "./news.db"
 
@@ -20,6 +20,7 @@ def stable_id(url: str) -> str:
     return base64.urlsafe_b64encode(h).decode().rstrip("=")
 
 def br_now():
+    # Horário Brasil/São Paulo (GMT-3)
     return datetime.now(timezone(timedelta(hours=-3)))
 
 def db_init():
@@ -66,29 +67,26 @@ def scrape_content(url: str):
         r = requests.get(url, timeout=12, headers={'User-Agent': 'Mozilla/5.0'})
         soup = BeautifulSoup(r.text, "html.parser")
 
-        # Título preferencialmente h1, senão title
-        title_tag = soup.find("h1")
+        title_tag = soup.find("h1") or soup.find("title")
         title = title_tag.get_text(strip=True) if title_tag else ""
-        if not title:
-            title_tag2 = soup.find("title")
-            if title_tag2:
-                title = title_tag2.get_text(strip=True)
 
-        # Imagem principal: procura meta og:image se img não for http
+        img = ""
         img_tag = soup.find("img")
-        img = img_tag["src"] if img_tag and img_tag.has_attr("src") and "http" in img_tag["src"] else ""
-        if not img:
+        if img_tag and img_tag.has_attr("src") and img_tag["src"].startswith("http"):
+            img = img_tag["src"]
+        else:
             og_tag = soup.find("meta", property="og:image")
             if og_tag and og_tag.has_attr("content"):
                 img = og_tag["content"]
 
-        # Parágrafos: todos <p> concatenados
         paragraphs = soup.find_all("p")
         content = "\n".join(p.get_text(strip=True) for p in paragraphs if p.get_text(strip=True))
 
-        return title, img, content
+        if len(title) > 8 and len(img) > 9 and len(content) > 32:
+            return title, img, content
+        return "", "", ""
     except Exception as e:
-        print(f"Erro ao raspar {url}: {e}")
+        print(f"Erro scraping {url}: {e}")
         return "", "", ""
 
 app = FastAPI()
@@ -114,36 +112,50 @@ def rss(keyword: str, hours: int = Query(12)):
     r = httpx.get(url)
     feed = feedparser.parse(r.text)
     unique_links = set()
-    print("--- INICIANDO COLETA ---")
+    print(f"Buscando notícias para '{keyword}' das últimas {hours} horas")
     for entry in feed.entries:
         link = entry.link
-        print("Link do feed:", link)
-        if link in unique_links: continue
-        unique_links.add(link)
-        title, img, content = scrape_content(link)
-        print("-> Título extraído:", title)
-        print("-> Imagem extraída:", img)
-        print("-> Conteúdo extraído:", content[:80])
-        if not title or not img or not content:
-            print("IGNORADO: Faltou algum campo")
+        if link in unique_links:
             continue
+        unique_links.add(link)
+        # Obter a data real da notícia do feed
+        pub_parsed = entry.get("published_parsed")
+        if not pub_parsed:
+            print(f"Sem data publicada: {link}")
+            continue
+        pub_datetime = datetime(*pub_parsed[:6], tzinfo=timezone.utc)  # UTC
+        # Converter para horário de São Paulo (GMT-3)
+        pub_br = pub_datetime.astimezone(timezone(timedelta(hours=-3)))
+        limite = br_now() - timedelta(hours=hours)
+        # Ignorar notícias fora do intervalo
+        if pub_br < limite:
+            print(f"Notícia antiga ignorada ({pub_br}): {link}")
+            continue
+
+        title, img, content = scrape_content(link)
+        print(f"Raspando notícia: {title[:50]} | img={'sim' if img else 'não'} | conteúdo chars: {len(content)}")
+        if not title or not img or not content:
+            print(f"Ignorado por dados incompletos: {link}")
+            continue
+
         item = {
             "id": stable_id(link),
             "url": link,
             "title": title,
             "img": img,
             "content": content,
-            "published_at": br_now().isoformat()
+            "published_at": pub_br.isoformat()
         }
         db_upsert(item)
+        time.sleep(1)  # para não sobrecarregar sites
 
     items = db_list_recent(hours)
     if not items:
-        return Response(f"Nenhuma notícia encontrada nas últimas {hours} horas.", media_type="text/plain")
+        return Response(f"Nenhuma notícia encontrada nas últimas {hours} horas para '{keyword}'.", media_type="text/plain")
 
     items_xml = ""
     for i in items:
-        description = f"<img src='{escape(i['img'])}'/><br>{escape(i['title'])}<br>{escape(i['content']).replace('\n','<br>')}"
+        description = f"<img src='{escape(i['img'])}'/><br>{escape(i['title'])}<br>{escape(i['content']).replace(chr(10),'<br>')}"
         items_xml += f"""
         <item>
             <title>{escape(i['title'])}</title>
@@ -164,5 +176,5 @@ def rss(keyword: str, hours: int = Query(12)):
         </channel>
     </rss>"""
 
-    print("--- COLETA FINALIZADA ---")
+    print("RSS gerado com ", len(items), "itens")
     return Response(rss, media_type="application/rss+xml")
