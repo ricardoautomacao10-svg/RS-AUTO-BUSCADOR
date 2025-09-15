@@ -12,20 +12,17 @@ import os
 
 app = FastAPI()
 
-# Caminho absoluto para a pasta static na raiz do projeto
+# Ajusta o caminho absoluto para a pasta 'static' na raiz do projeto
 base_dir = Path(__file__).resolve().parent.parent
 static_dir = base_dir / "static"
 
-# Monta para servir estáticos
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 @app.get("/")
 async def serve_panel():
     return FileResponse(static_dir / "index.html")
 
-# Notícias em memória
 news_storage: List[Dict] = []
-# Palavras-chave padrão
 keywords = ["exemplo", "notícia", "tecnologia"]
 
 class NewsItem(BaseModel):
@@ -64,7 +61,6 @@ async def scrape_article_text(url: str) -> str:
     return text
 
 async def generate_text_via_ia(text: str) -> str:
-    # Aqui faça a chamada real para sua IA, esse é um placeholder
     return f"Texto único gerado pela IA para: {text[:200]}..."
 
 async def collect_news():
@@ -81,7 +77,7 @@ async def startup_event():
 async def schedule_periodic_collect():
     while True:
         await collect_news()
-        await asyncio.sleep(600)  # a cada 10 minutos
+        await asyncio.sleep(600)  # 10 minutos
 
 @app.get("/news", response_model=List[NewsItem])
 async def get_news():
@@ -95,4 +91,4 @@ async def update_keywords(new_keywords: List[str]):
     return {"message": "Palavras-chave atualizadas e notícias coletadas."}
 
 if __name__ == "__main__":
-    uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
