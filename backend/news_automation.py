@@ -1,4 +1,6 @@
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import httpx
 from bs4 import BeautifulSoup
@@ -9,30 +11,36 @@ import uvicorn
 
 app = FastAPI()
 
-# Simulação do armazenamento simples em memória
+# Servir arquivos estáticos (ex: imagens, css, js) da pasta 'static'
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# Rota raiz para servir painel: carrega 'static/index.html' automaticamente
+@app.get("/")
+async def serve_panel():
+    return FileResponse("static/index.html")
+
+# Status check opcional
+@app.get("/status")
+async def root():
+    return {"message": "NewsBot Backend está ativo e funcionando!"}
+
+
+# Notícias em memória
 news_storage: List[Dict] = []
-
-# Palavras-chave configuráveis
+# Palavras-chave iniciais
 keywords = ["exemplo", "notícia", "tecnologia"]
-
 
 class NewsItem(BaseModel):
     title: str
     image_url: str
     generated_text: str
 
-
-@app.get("/")
-async def root():
-    return {"message": "NewsBot Backend está ativo e funcionando!"}
-
-
 async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
     url = f"https://news.google.com/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
-    articles = soup.select("article")[:3]  # pegar só primeiros 3 para exemplo
+    articles = soup.select("article")[:3]
 
     results = []
     for article in articles:
@@ -44,28 +52,21 @@ async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
         title = title_tag.get_text()
         image_url = img_tag['src'] if img_tag else ""
         link = link_tag['href']
-        text_raw = await scrape_article_text(link)  # função para pegar texto do artigo
-
+        text_raw = await scrape_article_text(link)
         generated_text = await generate_text_via_ia(text_raw)
-
         results.append(NewsItem(title=title, image_url=image_url, generated_text=generated_text).dict())
     return results
-
 
 async def scrape_article_text(url: str) -> str:
     async with httpx.AsyncClient() as client:
         r = await client.get(url)
     soup = BeautifulSoup(r.text, "html.parser")
     paragraphs = soup.find_all("p")
-    text = " ".join(p.get_text() for p in paragraphs[:5])  # pegar os primeiros 5 parágrafos
+    text = " ".join(p.get_text() for p in paragraphs[:5])
     return text
 
-
 async def generate_text_via_ia(text: str) -> str:
-    # Simulação da chamada para a IA que gera um parágrafo completo e único
-    # Na prática, conecte aqui API do ChatGPT ou outra que use
     return f"Texto único gerado pela IA para: {text[:200]}..."
-
 
 async def collect_news():
     global news_storage
@@ -74,32 +75,25 @@ async def collect_news():
         news = await fetch_news_for_keyword(kw)
         news_storage.extend(news)
 
-
 @app.on_event("startup")
 async def startup_event():
-    # Agendar coleta inicial e loop periódico a cada 1h
     asyncio.create_task(schedule_periodic_collect())
-
 
 async def schedule_periodic_collect():
     while True:
         await collect_news()
-        await asyncio.sleep(3600)  # 1 hora
-
+        await asyncio.sleep(3600)
 
 @app.get("/news", response_model=List[NewsItem])
 async def get_news():
     return news_storage
 
-
 @app.post("/keywords")
 async def update_keywords(new_keywords: List[str]):
     global keywords
     keywords = new_keywords
-    # Recoleta imediata ao atualizar
     await collect_news()
     return {"message": "Palavras-chave atualizadas e notícias coletadas."}
-
 
 if __name__ == "__main__":
     uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
