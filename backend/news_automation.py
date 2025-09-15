@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -12,8 +12,8 @@ import uvicorn
 
 app = FastAPI()
 
-# Ajustar caminho absoluto para a pasta static na raiz do projeto
-base_dir = Path(__file__).resolve().parent.parent  # sobe da pasta backend para a raiz
+# Caminho absoluto para a pasta static na raiz
+base_dir = Path(__file__).resolve().parent.parent  # sobe da pasta backend para raiz
 static_dir = base_dir / "static"
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -22,14 +22,10 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 async def serve_panel():
     return FileResponse(static_dir / "index.html")
 
-# Status check opcional
-@app.get("/status")
-async def root():
-    return {"message": "NewsBot Backend está ativo e funcionando!"}
-
-# Notícias em memória
+# Simulação do armazenamento simples em memória
 news_storage: List[Dict] = []
-# Palavras-chave iniciais
+
+# Palavras-chave configuráveis
 keywords = ["exemplo", "notícia", "tecnologia"]
 
 class NewsItem(BaseModel):
@@ -37,12 +33,16 @@ class NewsItem(BaseModel):
     image_url: str
     generated_text: str
 
+@app.get("/status")
+async def root():
+    return {"message": "NewsBot Backend está ativo e funcionando!"}
+
 async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
     url = f"https://news.google.com/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
-    articles = soup.select("article")[:3]
+    articles = soup.select("article")[:3]  # pegar só primeiros 3 para exemplo
 
     results = []
     for article in articles:
@@ -84,7 +84,7 @@ async def startup_event():
 async def schedule_periodic_collect():
     while True:
         await collect_news()
-        await asyncio.sleep(3600)
+        await asyncio.sleep(3600)  # 1 hora
 
 @app.get("/news", response_model=List[NewsItem])
 async def get_news():
