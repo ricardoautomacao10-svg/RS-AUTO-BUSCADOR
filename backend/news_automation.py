@@ -6,24 +6,26 @@ import httpx
 from bs4 import BeautifulSoup
 import asyncio
 import os
+from pathlib import Path
 from typing import List, Dict
 import uvicorn
 
 app = FastAPI()
 
-# Servir arquivos estáticos (ex: imagens, css, js) da pasta 'static'
-app.mount("/static", StaticFiles(directory="static"), name="static")
+# Ajustar caminho absoluto para a pasta static na raiz do projeto
+base_dir = Path(__file__).resolve().parent.parent  # sobe da pasta backend para a raiz
+static_dir = base_dir / "static"
 
-# Rota raiz para servir painel: carrega 'static/index.html' automaticamente
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
 @app.get("/")
 async def serve_panel():
-    return FileResponse("static/index.html")
+    return FileResponse(static_dir / "index.html")
 
 # Status check opcional
 @app.get("/status")
 async def root():
     return {"message": "NewsBot Backend está ativo e funcionando!"}
-
 
 # Notícias em memória
 news_storage: List[Dict] = []
