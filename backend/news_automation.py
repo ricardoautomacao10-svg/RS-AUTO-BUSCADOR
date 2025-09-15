@@ -12,8 +12,8 @@ import uvicorn
 
 app = FastAPI()
 
-# Caminho absoluto para a pasta static na raiz
-base_dir = Path(__file__).resolve().parent.parent  # sobe da pasta backend para raiz
+# Ajustar caminho para a pasta static na raiz do projeto
+base_dir = Path(__file__).resolve().parent.parent  # sobe duas pastas (de backend para raiz)
 static_dir = base_dir / "static"
 
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
@@ -22,10 +22,15 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 async def serve_panel():
     return FileResponse(static_dir / "index.html")
 
-# Simulação do armazenamento simples em memória
+# Status para verificar se o backend está ativo
+@app.get("/status")
+async def root():
+    return {"message": "NewsBot Backend está ativo e funcionando!"}
+
+# Armazenamento simples em memória das notícias
 news_storage: List[Dict] = []
 
-# Palavras-chave configuráveis
+# Palavras-chave iniciais para busca
 keywords = ["exemplo", "notícia", "tecnologia"]
 
 class NewsItem(BaseModel):
@@ -33,16 +38,12 @@ class NewsItem(BaseModel):
     image_url: str
     generated_text: str
 
-@app.get("/status")
-async def root():
-    return {"message": "NewsBot Backend está ativo e funcionando!"}
-
 async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
     url = f"https://news.google.com/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     async with httpx.AsyncClient() as client:
         response = await client.get(url)
     soup = BeautifulSoup(response.text, "html.parser")
-    articles = soup.select("article")[:3]  # pegar só primeiros 3 para exemplo
+    articles = soup.select("article")[:3]  # pegar só primeiros 3
 
     results = []
     for article in articles:
@@ -68,6 +69,7 @@ async def scrape_article_text(url: str) -> str:
     return text
 
 async def generate_text_via_ia(text: str) -> str:
+    # Simulação para gerar texto único pela IA
     return f"Texto único gerado pela IA para: {text[:200]}..."
 
 async def collect_news():
@@ -84,7 +86,7 @@ async def startup_event():
 async def schedule_periodic_collect():
     while True:
         await collect_news()
-        await asyncio.sleep(3600)  # 1 hora
+        await asyncio.sleep(3600)  # coleta a cada 1 hora
 
 @app.get("/news", response_model=List[NewsItem])
 async def get_news():
