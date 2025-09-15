@@ -2,8 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-import httpx
-from bs4 import BeautifulSoup
+import feedparser
 import asyncio
 from pathlib import Path
 from typing import List, Dict
@@ -21,53 +20,35 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 async def serve_panel():
     return FileResponse(static_dir / "index.html")
 
+
 news_storage: List[Dict] = []
 keywords = ["exemplo", "notícia", "tecnologia"]
 
 class NewsItem(BaseModel):
     title: str
-    image_url: str
-    generated_text: str
+    link: str
+    published: str
+    summary: str
 
-async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
-    url = f"https://news.google.com/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url)
-    soup = BeautifulSoup(response.text, "html.parser")
-    articles = soup.select("article")[:3]
-
-    results = []
-    for article in articles:
-        title_tag = article.find("h3")
-        img_tag = article.find("img")
-        link_tag = article.find("a", href=True)
-        if not (title_tag and link_tag):
-            continue
-        title = title_tag.get_text()
-        image_url = img_tag['src'] if img_tag else ""
-        link = link_tag['href']
-        text_raw = await scrape_article_text(link)
-        generated_text = await generate_text_via_ia(text_raw)
-        results.append(NewsItem(title=title, image_url=image_url, generated_text=generated_text).dict())
-    return results
-
-async def scrape_article_text(url: str) -> str:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(url)
-    soup = BeautifulSoup(r.text, "html.parser")
-    paragraphs = soup.find_all("p")
-    text = " ".join(p.get_text() for p in paragraphs[:5])
-    return text
-
-async def generate_text_via_ia(text: str) -> str:
-    return f"Texto único gerado pela IA para: {text[:200]}..."
+def fetch_news_from_rss(keyword: str) -> List[NewsItem]:
+    rss_url = f"https://news.google.com/rss/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
+    feed = feedparser.parse(rss_url)
+    articles = []
+    for entry in feed.entries[:10]:
+        articles.append(NewsItem(
+            title=entry.title,
+            link=entry.link,
+            published=entry.get("published", ""),
+            summary=entry.get("summary", "")
+        ).dict())
+    return articles
 
 async def collect_news():
     global news_storage
     news_storage.clear()
     for kw in keywords:
-        news = await fetch_news_for_keyword(kw)
-        news_storage.extend(news)
+        articles = fetch_news_from_rss(kw)
+        news_storage.extend(articles)
 
 @app.on_event("startup")
 async def startup_event():
