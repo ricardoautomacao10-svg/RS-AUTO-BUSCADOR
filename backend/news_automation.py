@@ -12,7 +12,6 @@ import os
 
 app = FastAPI()
 
-# Ajusta o caminho absoluto para a pasta 'static' na raiz do projeto
 base_dir = Path(__file__).resolve().parent.parent
 static_dir = base_dir / "static"
 
@@ -91,4 +90,4 @@ async def update_keywords(new_keywords: List[str]):
     return {"message": "Palavras-chave atualizadas e notícias coletadas."}
 
 if __name__ == "__main__":
-    uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.environ.get("PORT", "8000")))
+    uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
