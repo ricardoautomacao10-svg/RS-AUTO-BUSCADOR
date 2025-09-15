@@ -1,169 +1,116 @@
-<!doctype html>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>News Automation • Painel</title>
-<style>
-  :root { color-scheme: light dark; }
-  body{font-family:system-ui,Segoe UI,Roboto,Arial;max-width:920px;margin:32px auto;padding:0 16px}
-  h1{margin:0 0 16px}
-  fieldset{border:1px solid #8883;padding:12px;border-radius:10px;margin:14px 0}
-  label{display:block;margin:8px 0 4px}
-  input[type=text]{width:100%;padding:10px;border-radius:8px;border:1px solid #8885}
-  button{padding:10px 14px;border-radius:10px;border:0;background:#0b5cff;color:#fff;cursor:pointer}
-  button.secondary{background:#444}
-  pre{white-space:pre-wrap;background:#0002;padding:10px;border-radius:8px}
-  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
-  .row > * {flex:1 1 240px}
-  .links a{margin-right:10px}
-  .small{opacity:.8;font-size:.92em}
-  .ok{color:#0a7a39}
-  .bad{color:#a31515}
-</style>
-<h1>News Automation — Painel</h1>
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import httpx
+from bs4 import BeautifulSoup
+import asyncio
+import os
+from typing import List, Dict
+import uvicorn
 
-<fieldset>
-  <legend>Coletar por palavra-chave</legend>
-  <div class="row">
-    <div>
-      <label>Palavras-chave (separe por vírgula)</label>
-      <input id="kw" type="text" value="Litoral Norte de São Paulo, Ilhabela" />
-    </div>
-    <div>
-      <label>Janela (horas)</label>
-      <input id="hours" type="text" value="12" />
-    </div>
-    <div>
-      <label>&nbsp;</label>
-      <button onclick="doCrawl()">Coletar agora</button>
-    </div>
-  </div>
-  <label><input id="reqh1" type="checkbox" checked> Exigir título</label>
-  <label><input id="reqimg" type="checkbox"> Exigir imagem</label>
-  <label><input id="debug" type="checkbox"> Debug</label>
-  <div id="result1" class="small"></div>
-</fieldset>
+app = FastAPI()
 
-<fieldset>
-  <legend>Coletar de listagem (ex.: Ilhabela)</legend>
-  <div class="row">
-    <div>
-      <label>URL da listagem</label>
-      <input id="listurl" type="text" value="https://www.ilhabela.sp.gov.br/portal/noticias/3" />
-    </div>
-    <div>
-      <label>Slug/keyword</label>
-      <input id="listslug" type="text" value="litoral-norte-de-sao-paulo" />
-    </div>
-    <div>
-      <label>&nbsp;</label>
-      <button onclick="doCrawlSite()">Coletar listagem</button>
-    </div>
-  </div>
-  <div id="result2" class="small"></div>
-</fieldset>
+# Servir arquivos estáticos da pasta 'static'
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-<fieldset>
-  <legend>Links rápidos</legend>
-  <div class="links small">
-    <a id="rss" href="/rss/litoral-norte-de-sao-paulo" target="_blank">RSS (litoral-norte-de-sao-paulo)</a>
-    <a id="json" href="/api/json/litoral-norte-de-sao-paulo" target="_blank">JSON (litoral-norte-de-sao-paulo)</a>
-    <a href="/healthz" target="_blank">/healthz</a>
-  </div>
-</fieldset>
+# Rota raiz para servir o painel HTML
+@app.get("/")
+async def serve_panel():
+    return FileResponse("static/index.html")
 
-<fieldset>
-  <legend>Adicionar link direto</legend>
-  <div class="row">
-    <div>
-      <label>URL da matéria</label>
-      <input id="addurl" type="text" placeholder="https://..." />
-    </div>
-    <div>
-      <label>Keyword (slug)</label>
-      <input id="addslug" type="text" value="litoral-norte-de-sao-paulo" />
-    </div>
-    <div>
-      <label>&nbsp;</label>
-      <button onclick="doAdd()">Adicionar</button>
-    </div>
-  </div>
-  <div id="result3" class="small"></div>
-</fieldset>
 
-<fieldset>
-  <legend>Regras por slug (opcional)</legend>
-  <div class="row">
-    <div>
-      <label>Slug</label>
-      <input id="rslug" type="text" value="litoral-norte-de-sao-paulo" />
-    </div>
-    <div>
-      <label>URL regex (ex.: ^https?://.../portal/noticias/0/3/\\d+/)</label>
-      <input id="rregex" type="text" value="^https?://(?:www\\.)?ilhabela\\.sp\\.gov\\.br/portal/noticias/0/3/\\d+/" />
-    </div>
-  </div>
-  <div class="row">
-    <div><label>List selector (CSS)</label><input id="rlist" type="text" placeholder=".lista a" /></div>
-    <div><label>Title selector</label><input id="rtitle" type="text" placeholder="h1.titulo" /></div>
-    <div><label>Image selector</label><input id="rimg" type="text" placeholder='meta[property="og:image"]' /></div>
-    <div><label>Paragraph selector</label><input id="rpara" type="text" placeholder=".conteudo p" /></div>
-  </div>
-  <div class="row">
-    <button onclick="saveRules()">Salvar regras</button>
-    <button class="secondary" onclick="clearRules()">Limpar regras</button>
-    <div id="rmsg" class="small"></div>
-  </div>
-</fieldset>
+# Simulação do armazenamento simples em memória
+news_storage: List[Dict] = []
 
-<pre id="log"></pre>
+# Palavras-chave configuráveis
+keywords = ["exemplo", "notícia", "tecnologia"]
 
-<script>
-async function doCrawl(){
-  const kw = document.getElementById('kw').value;
-  const hours = parseInt(document.getElementById('hours').value||'12',10);
-  const reqh1 = document.getElementById('reqh1').checked;
-  const reqimg = document.getElementById('reqimg').checked;
-  const debug = document.getElementById('debug').checked;
-  const body = { keywords: kw.split(',').map(s=>s.trim()).filter(Boolean), hours_max: hours, require_h1:reqh1, require_image:reqimg, debug };
-  const r = await fetch('/crawl', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-  const js = await r.json();
-  document.getElementById('result1').innerHTML = '<span class="ok">OK</span> — ' + JSON.stringify(js.stats);
-  document.getElementById('log').textContent = JSON.stringify(js, null, 2);
-}
-async function doCrawlSite(){
-  const url = document.getElementById('listurl').value;
-  const slug = document.getElementById('listslug').value;
-  const r = await fetch('/crawl_site', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({url, keyword: slug})});
-  const js = await r.json();
-  document.getElementById('result2').innerHTML = (js.ok?'<span class="ok">OK</span>':'<span class="bad">ERRO</span>') + ' — encontrados: ' + (js.found||0);
-  document.getElementById('rss').href = '/rss/' + slug;
-  document.getElementById('json').href = '/api/json/' + slug;
-  document.getElementById('log').textContent = JSON.stringify(js, null, 2);
-}
-async function doAdd(){
-  const url = document.getElementById('addurl').value;
-  const keyword = document.getElementById('addslug').value;
-  const r = await fetch('/add?url=' + encodeURIComponent(url) + '&keyword=' + encodeURIComponent(keyword));
-  const js = await r.json();
-  document.getElementById('result3').innerHTML = '<span class="ok">OK</span> — <a href="'+('/item/'+js.id)+'" target="_blank">ver item</a>';
-  document.getElementById('log').textContent = JSON.stringify(js, null, 2);
-}
-async function saveRules(){
-  const slug = document.getElementById('rslug').value;
-  const url_regex = document.getElementById('rregex').value || null;
-  const list_selector = document.getElementById('rlist').value || null;
-  const title_sel = document.getElementById('rtitle').value || null;
-  const image_sel = document.getElementById('rimg').value || null;
-  const para_sel = document.getElementById('rpara').value || null;
-  const r = await fetch('/rules/set', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({slug, url_regex, list_selector, title_sel, image_sel, para_sel})});
-  const js = await r.json();
-  document.getElementById('rmsg').textContent = 'Regras salvas para ' + js.slug;
-}
-async function clearRules(){
-  const slug = document.getElementById('rslug').value;
-  const r = await fetch('/rules/clear?slug='+encodeURIComponent(slug), {method:'DELETE'});
-  const js = await r.json();
-  document.getElementById('rmsg').textContent = 'Regras limpas';
-}
-</script>
+
+class NewsItem(BaseModel):
+    title: str
+    image_url: str
+    generated_text: str
+
+
+@app.get("/status")
+async def root():
+    return {"message": "NewsBot Backend está ativo e funcionando!"}
+
+
+async def fetch_news_for_keyword(keyword: str) -> List[NewsItem]:
+    url = f"https://news.google.com/search?q={keyword}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url)
+    soup = BeautifulSoup(response.text, "html.parser")
+    articles = soup.select("article")[:3]  # pegar só primeiros 3 para exemplo
+
+    results = []
+    for article in articles:
+        title_tag = article.find("h3")
+        img_tag = article.find("img")
+        link_tag = article.find("a", href=True)
+        if not (title_tag and link_tag):
+            continue
+        title = title_tag.get_text()
+        image_url = img_tag['src'] if img_tag else ""
+        link = link_tag['href']
+        text_raw = await scrape_article_text(link)  # função para pegar texto do artigo
+
+        generated_text = await generate_text_via_ia(text_raw)
+
+        results.append(NewsItem(title=title, image_url=image_url, generated_text=generated_text).dict())
+    return results
+
+
+async def scrape_article_text(url: str) -> str:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(url)
+    soup = BeautifulSoup(r.text, "html.parser")
+    paragraphs = soup.find_all("p")
+    text = " ".join(p.get_text() for p in paragraphs[:5])  # pegar os primeiros 5 parágrafos
+    return text
+
+
+async def generate_text_via_ia(text: str) -> str:
+    # Simulação da chamada para a IA que gera um parágrafo completo e único
+    # Na prática, conecte aqui API do ChatGPT ou outra que use
+    return f"Texto único gerado pela IA para: {text[:200]}..."
+
+
+async def collect_news():
+    global news_storage
+    news_storage.clear()
+    for kw in keywords:
+        news = await fetch_news_for_keyword(kw)
+        news_storage.extend(news)
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Agendar coleta inicial e loop periódico a cada 1h
+    asyncio.create_task(schedule_periodic_collect())
+
+
+async def schedule_periodic_collect():
+    while True:
+        await collect_news()
+        await asyncio.sleep(3600)  # 1 hora
+
+
+@app.get("/news", response_model=List[NewsItem])
+async def get_news():
+    return news_storage
+
+
+@app.post("/keywords")
+async def update_keywords(new_keywords: List[str]):
+    global keywords
+    keywords = new_keywords
+    # Recoleta imediata ao atualizar
+    await collect_news()
+    return {"message": "Palavras-chave atualizadas e notícias coletadas."}
+
+
+if __name__ == "__main__":
+    uvicorn.run("news_automation:app", host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
