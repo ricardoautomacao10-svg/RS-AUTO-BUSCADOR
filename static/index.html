@@ -1,53 +1,43 @@
 <!DOCTYPE html>
-<html>
+<html lang="pt-BR">
 <head>
     <meta charset="UTF-8" />
-    <title>NewsBot Painel</title>
+    <title>RS News Bot</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 20px; }
-        input { width: 300px; padding: 5px; }
-        button { padding: 5px 10px; margin-left: 10px; }
-        .news-item { border-bottom: 1px solid #ccc; margin-top: 20px; padding-bottom: 10px; }
-        img { max-width: 300px; display: block; margin-top: 5px; margin-bottom: 5px; }
+        body { font-family: Arial; padding: 20px; }
+        input { width: 350px; padding: 8px; }
+        button { background: #0073e6; color: #fff; border: none; padding: 8px 16px; margin-left: 5px;}
+        .news-item { background: #f4f4f4; margin-top: 20px; padding: 10px; border-radius: 6px;}
+        .news-item a { color: #0073e6; font-weight: bold; text-decoration: none; }
+        .news-item a:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
-    <h1>NewsBot Painel</h1>
-    <p>Informe palavras-chave separadas por vírgula:</p>
-    <input type="text" id="keywords" placeholder="exemplo, notícia, tecnologia" value="exemplo, notícia, tecnologia" />
-    <button onclick="atualizar()">Atualizar</button>
-
-    <h2>Notícias Coletadas</h2>
+    <h1>RS News Bot</h1>
+    <input type="text" id="keywords" value="brasil" />
+    <button onclick="buscar()">Buscar</button>
     <div id="news"></div>
-
     <script>
-        async function atualizar() {
-            const input = document.getElementById("keywords").value;
-            const keywords = input.split(",").map(k => k.trim()).filter(k => k.length > 0);
-            const response = await fetch("/keywords", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify(keywords)
-            });
-            const data = await response.json();
-            alert(data.message);
-            buscarNoticias();
+        async function buscar() {
+            let q = document.getElementById("keywords").value;
+            let url = "https://SEU-BACKEND.onrender.com/news?q=" + encodeURIComponent(q);
+            let resposta = await fetch(url);
+            let dados = await resposta.json();
+            let html = "";
+            if (dados.length === 0) {
+                html = "<p>Nenhuma notícia encontrada.</p>";
+            } else {
+                html = dados.map(n => `
+                  <div class="news-item">
+                    <a href="${n.link}" target="_blank">${n.title}</a>
+                    <p>${n.published}</p>
+                    <p>${n.summary}</p>
+                  </div>
+                `).join('');
+            }
+            document.getElementById("news").innerHTML = html;
         }
-
-        async function buscarNoticias() {
-            const response = await fetch("/news");
-            const news = await response.json();
-            const container = document.getElementById("news");
-            container.innerHTML = news.map(n => `
-                <div class="news-item">
-                    <h3>${n.title}</h3>
-                    ${n.image_url ? `<img src="${n.image_url}" alt="Imagem">` : ''}
-                    <p>${n.generated_text}</p>
-                </div>
-            `).join("");
-        }
-
-        buscarNoticias();
+        buscar();
     </script>
 </body>
 </html>
