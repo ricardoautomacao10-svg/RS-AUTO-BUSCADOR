@@ -4,11 +4,11 @@ from pydantic import BaseModel
 import feedparser
 import urllib.parse
 
-app = FastAPI(title="RS News Bot API")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Permitir qualquer origem para frontend externo
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -22,8 +22,8 @@ class NewsItem(BaseModel):
 
 @app.get("/news", response_model=list[NewsItem])
 def get_news(q: str = "brasil"):
-    keyword_encoded = urllib.parse.quote(q)
-    rss_url = f"https://news.google.com/rss/search?q={keyword_encoded}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
+    q_encoded = urllib.parse.quote(q)
+    rss_url = f"https://news.google.com/rss/search?q={q_encoded}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
     feed = feedparser.parse(rss_url)
     articles = []
     for entry in feed.entries[:10]:
