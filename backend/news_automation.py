@@ -6,7 +6,6 @@ import urllib.parse
 
 app = FastAPI(title="RS News Bot API")
 
-# Libera frontend externo
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
