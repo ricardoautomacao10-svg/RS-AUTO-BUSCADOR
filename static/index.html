@@ -2,7 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8" />
-    <title>RS News Bot</title>
+    <title>RS News Painel</title>
     <style>
         body { font-family: Arial; padding: 20px; }
         input { width: 350px; padding: 8px; }
@@ -10,23 +10,29 @@
         .news-item { background: #f4f4f4; margin-top: 20px; padding: 10px; border-radius: 6px;}
         .news-item a { color: #0073e6; font-weight: bold; text-decoration: none; }
         .news-item a:hover { text-decoration: underline; }
+        #rss-container { margin-top: 30px; padding: 10px; background: #e9f4fc; border-radius: 5px; }
     </style>
 </head>
 <body>
-    <h1>RS News Bot</h1>
+    <h1>RS News Painel</h1>
     <input type="text" id="keywords" value="brasil" />
     <button onclick="buscar()">Buscar</button>
+
+    <div id="rss-container"></div>
     <div id="news"></div>
     <script>
+        let ultimoRSS = "";
         async function buscar() {
             let q = document.getElementById("keywords").value;
-            let url = "https://SEU-BACKEND.onrender.com/news?q=" + encodeURIComponent(q);
+            let url = "https://SEU_BACKEND.onrender.com/news?q=" + encodeURIComponent(q);
             let resposta = await fetch(url);
             let dados = await resposta.json();
             let html = "";
             if (dados.length === 0) {
                 html = "<p>Nenhuma notícia encontrada.</p>";
+                ultimoRSS = "";
             } else {
+                ultimoRSS = dados[0].rss_url;
                 html = dados.map(n => `
                   <div class="news-item">
                     <a href="${n.link}" target="_blank">${n.title}</a>
@@ -36,6 +42,10 @@
                 `).join('');
             }
             document.getElementById("news").innerHTML = html;
+            document.getElementById("rss-container").innerHTML =
+              ultimoRSS
+                ? `<b>Link RSS para WordPress:</b> <input value="${ultimoRSS}" style="width:500px">`
+                : "";
         }
         buscar();
     </script>
