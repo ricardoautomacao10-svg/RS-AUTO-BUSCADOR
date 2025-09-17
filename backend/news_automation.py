@@ -6,9 +6,10 @@ import urllib.parse
 
 app = FastAPI()
 
+# Permitir acesso frontend (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Ajuste para o domínio do seu frontend em produção
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
