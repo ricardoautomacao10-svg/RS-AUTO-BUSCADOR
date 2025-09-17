@@ -19,6 +19,7 @@ class NewsItem(BaseModel):
     link: str
     published: str
     summary: str
+    rss_url: str
 
 @app.get("/news", response_model=list[NewsItem])
 def get_news(q: str = "brasil"):
@@ -31,6 +32,7 @@ def get_news(q: str = "brasil"):
             title=entry.title,
             link=entry.link,
             published=entry.get("published", ""),
-            summary=entry.get("summary", "")
+            summary=entry.get("summary", ""),
+            rss_url=rss_url
         ))
     return articles
