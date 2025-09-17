@@ -1,19 +1,24 @@
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 import feedparser
 import urllib.parse
+from pathlib import Path
+from typing import List, Dict
 
 app = FastAPI()
 
-# Permitir acesso frontend (CORS)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Ajuste para o domínio do seu frontend em produção
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Ajuste 'static_dir' para o seu caminho da pasta estática com index.html
+static_dir = Path(__file__).parent / "static"
+
+# Monta a pasta estática para servir HTML, CSS, JS, imagens
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+@app.get("/")
+async def root():
+    # Serve o arquivo index.html da pasta estática na rota raiz
+    return FileResponse(static_dir / "index.html")
 
 class NewsItem(BaseModel):
     title: str
@@ -22,7 +27,7 @@ class NewsItem(BaseModel):
     summary: str
     rss_url: str
 
-@app.get("/news", response_model=list[NewsItem])
+@app.get("/news", response_model=List[NewsItem])
 def get_news(q: str = "brasil"):
     q_encoded = urllib.parse.quote(q)
     rss_url = f"https://news.google.com/rss/search?q={q_encoded}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
